@@ -951,3 +951,61 @@ impl Interactive for VpclipM {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session_with_model() -> Session {
+        let mut s = Session::new();
+        s.cmdline("line 0,0 100,0").unwrap();
+        s.cmdline("").unwrap();
+        s.cmdline("circle 50,25 20").unwrap();
+        s
+    }
+
+    fn viewports(s: &Session, layout: &str) -> Vec<(Handle, Viewport)> {
+        s.doc()
+            .unwrap()
+            .layout(layout)
+            .unwrap()
+            .entities
+            .iter()
+            .filter_map(|e| if let EntityKind::Viewport(v) = &e.kind { Some((e.handle, v.clone())) } else { None })
+            .collect()
+    }
+
+    /// MVIEW Restore lays out a saved tiled model-space viewport configuration (VPORTS) as
+    /// paper-space viewport entities in the current layout, one per tile, over the given window.
+    #[test]
+    fn mview_restore_lays_out_a_saved_tiled_configuration() {
+        let mut s = session_with_model();
+        // Two tiles in the Model tab, saved as a named configuration (the same data MVIEW
+        // Restore reads).
+        s.execute("-vports", &json!({ "option": "2", "arrangement": "horizontal" })).unwrap();
+        s.execute("-vports", &json!({ "option": "save", "name": "Two Tiles" })).unwrap();
+
+        s.execute("layout.set", &json!({ "name": "Layout1" })).unwrap();
+        let before = viewports(&s, "Layout1").len();
+        let r = s.execute("mview", &json!({ "option": "restore", "name": "Two Tiles", "p1": [0, 0], "p2": [10, 6] })).unwrap();
+        let created = r["viewports"].as_array().unwrap().len();
+        assert_eq!(created, 2, "one viewport per saved tile");
+        let after = viewports(&s, "Layout1");
+        assert_eq!(after.len(), before + 2);
+        // The tiles were arranged horizontally (stacked top/bottom): both viewports share the
+        // window's width and together cover its height.
+        let total_h: f64 = after[after.len() - 2..].iter().map(|(_, v)| v.height).sum();
+        assert!((total_h - 6.0).abs() < 1e-6, "the tiles fill the window's height");
+        for (_, v) in &after[after.len() - 2..] {
+            assert!((v.width - 10.0).abs() < 1e-6, "each tile spans the window's width");
+        }
+
+        // *Active (the default) restores the live tiling, still two tiles.
+        s.execute("mview", &json!({ "option": "restore", "p1": [20, 0], "p2": [30, 6] })).unwrap();
+        assert_eq!(viewports(&s, "Layout1").len(), before + 4);
+
+        // An unknown configuration name reports a clear error rather than panicking.
+        let err = s.execute("mview", &json!({ "option": "restore", "name": "No Such Config" })).unwrap_err();
+        assert!(err.to_string().contains("Could not find viewport configuration"));
+    }
+}
