@@ -203,16 +203,48 @@ fn overkill(s: &mut Session, hs: Option<Vec<Handle>>, o: &Opts) -> Result<Report
     let mut rep = Report::default();
     let mut gone = vec![false; cands.len()];
     let mut changed: HashMap<usize, EntityKind> = HashMap::new();
+    let mut pl_trim: HashMap<usize, (bool, bool)> = HashMap::new();
     duplicates(&cands, o, &mut gone, &mut rep);
-    lines(&cands, o, &mut gone, &mut changed, &mut rep);
+    lines(&cands, o, &mut gone, &mut changed, &mut pl_trim, &mut rep);
     arcs(&cands, o, &mut gone, &mut changed, &mut rep);
+    // Apply segment-level trims `lines` found on a polyline (one or both of its terminal
+    // segments duplicated/overlapped another object or polyline segment): shorten it, or remove
+    // it entirely once trimming leaves too few vertices to stay a polyline.
+    for (&i, &(front, back)) in pl_trim.iter() {
+        if gone.get(i).copied().unwrap_or(true) {
+            continue;
+        }
+        let Some(EntityKind::LwPolyline(pl)) = cands.get(i).map(|c| &c.e.kind) else { continue };
+        let mut pl = pl.clone();
+        if back && pl.vertices.len() > 1 {
+            pl.vertices.pop();
+        }
+        if front && !pl.vertices.is_empty() {
+            pl.vertices.remove(0);
+        }
+        if pl.vertices.len() < 2 {
+            if let Some(g) = gone.get_mut(i) {
+                *g = true;
+            }
+        } else {
+            changed.insert(i, EntityKind::LwPolyline(pl));
+        }
+    }
     if o.plines {
         for (i, c) in cands.iter().enumerate() {
             if gone.get(i).copied().unwrap_or(true) || c.protected {
                 continue;
             }
-            if let EntityKind::LwPolyline(pl) = &c.e.kind {
-                let mut pl = pl.clone();
+            // Optimize on top of any segment trim already applied above, not the original.
+            let base = match changed.get(&i) {
+                Some(EntityKind::LwPolyline(p)) => Some(p.clone()),
+                Some(_) => None,
+                None => match &c.e.kind {
+                    EntityKind::LwPolyline(p) => Some(p.clone()),
+                    _ => None,
+                },
+            };
+            if let Some(mut pl) = base {
                 let n = optimize_pline(&mut pl, o.q());
                 if n > 0 {
                     rep.segments += n;
@@ -265,9 +297,30 @@ fn duplicates(cands: &[Cand], o: &Opts, gone: &mut [bool], rep: &mut Report) {
     }
 }
 
-/// A line as a direction-normalised record.
+/// Direction angle (seam-normalised) and unit vector for a segment from `a` to `b` of length `len`.
+fn line_dir(a: Vec2, b: Vec2, len: f64) -> (f64, Vec2) {
+    let mut u = (b - a) * (1.0 / len);
+    let mut theta = u.angle();
+    if theta < SEAM {
+        theta += std::f64::consts::PI;
+        u = u * -1.0;
+    } else if theta >= SEAM + std::f64::consts::PI {
+        theta -= std::f64::consts::PI;
+        u = u * -1.0;
+    }
+    (theta, u)
+}
+
+/// A `LINE`, or a straight polyline segment, as a direction-normalised record.
 struct LineRec {
     i: usize,
+    /// `Some(true)`/`Some(false)` when this is the first/last segment of an *open* polyline —
+    /// the only polyline segments it is safe to delete or trim without breaking the polyline's
+    /// connectivity. `None` for a whole `LINE` entity, or an interior/closed-polyline segment
+    /// (still usable as a keeper that absorbs fully-contained duplicates, just never deleted or
+    /// grown, since growing it would move an interior vertex and change the polyline's shape).
+    term: Option<bool>,
+    is_poly: bool,
     prop: u32,
     theta: f64,
     u: Vec2,
@@ -277,31 +330,72 @@ struct LineRec {
     len: f64,
 }
 
-/// Lines on one infinite line: delete those lying on another, combine partial overlaps (and
-/// end-to-end ones when asked).
-fn lines(cands: &[Cand], o: &Opts, gone: &mut [bool], changed: &mut HashMap<usize, EntityKind>, rep: &mut Report) {
+/// Lines and polyline straight segments on one infinite line: delete those lying on another,
+/// combine partial overlaps (and end-to-end ones when asked). Segments that get deleted/trimmed
+/// off a polyline are reported through `pl_trim` (cand index → (trim front, trim back)) rather
+/// than `gone`, so the caller can shorten the polyline instead of removing the whole object.
+fn lines(
+    cands: &[Cand],
+    o: &Opts,
+    gone: &mut [bool],
+    changed: &mut HashMap<usize, EntityKind>,
+    pl_trim: &mut HashMap<usize, (bool, bool)>,
+    rep: &mut Report,
+) {
     let q = o.q();
     let mut recs: Vec<LineRec> = Vec::new();
     for (i, c) in cands.iter().enumerate() {
-        let EntityKind::Line(l) = &c.e.kind else { continue };
-        if gone.get(i).copied().unwrap_or(true) || c.protected || !l.a.is_finite() || !l.b.is_finite() || (l.a.z - l.b.z).abs() > q {
+        if gone.get(i).copied().unwrap_or(true) || c.protected {
             continue;
         }
-        let (a, b) = (l.a.xy(), l.b.xy());
-        let len = a.dist(b);
-        if len.is_nan() || len <= q {
-            continue;
+        match &c.e.kind {
+            EntityKind::Line(l) => {
+                if !l.a.is_finite() || !l.b.is_finite() || (l.a.z - l.b.z).abs() > q {
+                    continue;
+                }
+                let (a, b) = (l.a.xy(), l.b.xy());
+                let len = a.dist(b);
+                if len.is_nan() || len <= q {
+                    continue;
+                }
+                let (theta, u) = line_dir(a, b, len);
+                recs.push(LineRec { i, term: None, is_poly: false, prop: c.prop, theta, u, a, b, z: l.a.z, len });
+            }
+            EntityKind::LwPolyline(pl) if o.plines => {
+                let nv = pl.vertices.len();
+                if nv < 2 {
+                    continue;
+                }
+                let seg_count = if pl.closed { nv } else { nv - 1 };
+                for j in 0..seg_count {
+                    let Some(av) = pl.vertices.get(j) else { break };
+                    if av.bulge != 0.0 {
+                        continue; // arc segment: not a straight line to compare here.
+                    }
+                    let Some(bv) = pl.vertices.get((j + 1) % nv) else { break };
+                    let (a, b) = (av.p, bv.p);
+                    if !a.is_finite() || !b.is_finite() {
+                        continue;
+                    }
+                    let len = a.dist(b);
+                    if len.is_nan() || len <= q {
+                        continue;
+                    }
+                    let (theta, u) = line_dir(a, b, len);
+                    let term = if pl.closed {
+                        None
+                    } else if j == 0 {
+                        Some(true)
+                    } else if j == seg_count - 1 {
+                        Some(false)
+                    } else {
+                        None
+                    };
+                    recs.push(LineRec { i, term, is_poly: true, prop: c.prop, theta, u, a, b, z: pl.elevation, len });
+                }
+            }
+            _ => {}
         }
-        let mut u = (b - a) * (1.0 / len);
-        let mut theta = u.angle();
-        if theta < SEAM {
-            theta += std::f64::consts::PI;
-            u = u * -1.0;
-        } else if theta >= SEAM + std::f64::consts::PI {
-            theta -= std::f64::consts::PI;
-            u = u * -1.0;
-        }
-        recs.push(LineRec { i, prop: c.prop, theta, u, a, b, z: l.a.z, len });
     }
     if recs.len() < 2 {
         return;
@@ -322,14 +416,22 @@ fn lines(cands: &[Cand], o: &Opts, gone: &mut [bool], changed: &mut HashMap<usiz
         if let Some(run) = recs.get(start..end)
             && run.len() > 1
         {
-            same_direction(run, cands, o, gone, changed, rep);
+            same_direction(run, cands, o, gone, changed, pl_trim, rep);
         }
         start = end;
     }
 }
 
 /// Lines of one direction run: split by offset, then merge each collinear set.
-fn same_direction(run: &[LineRec], cands: &[Cand], o: &Opts, gone: &mut [bool], changed: &mut HashMap<usize, EntityKind>, rep: &mut Report) {
+fn same_direction(
+    run: &[LineRec],
+    cands: &[Cand],
+    o: &Opts,
+    gone: &mut [bool],
+    changed: &mut HashMap<usize, EntityKind>,
+    pl_trim: &mut HashMap<usize, (bool, bool)>,
+    rep: &mut Report,
+) {
     let q = o.q();
     let Some(r0) = run.first() else { return };
     // Each line's own offset from a common origin: collinear lines agree even when the run is
@@ -349,37 +451,51 @@ fn same_direction(run: &[LineRec], cands: &[Cand], o: &Opts, gone: &mut [bool], 
             && group.len() > 1
         {
             let members: Vec<&LineRec> = group.iter().map(|g| g.1).collect();
-            collinear(&members, cands, o, gone, changed, rep);
+            collinear(&members, cands, o, gone, changed, pl_trim, rep);
         }
         start = end;
     }
 }
 
-fn collinear(members: &[&LineRec], cands: &[Cand], o: &Opts, gone: &mut [bool], changed: &mut HashMap<usize, EntityKind>, rep: &mut Report) {
+/// Merge one collinear set of lines/polyline segments. A polyline segment may act as a keeper
+/// (other objects fully contained in it are simply deleted, it is never itself changed) but can
+/// only be the *victim* being deleted/trimmed when it is a terminal segment of an open polyline
+/// (`term.is_some()`); interior and closed-polyline segments are never deleted here, so a
+/// polyline never loses connectivity through this pass. Segments of the same source object never
+/// merge with each other (self-pairs are skipped).
+fn collinear(
+    members: &[&LineRec],
+    cands: &[Cand],
+    o: &Opts,
+    gone: &mut [bool],
+    changed: &mut HashMap<usize, EntityKind>,
+    pl_trim: &mut HashMap<usize, (bool, bool)>,
+    rep: &mut Report,
+) {
     let q = o.q();
     let Some(r) = members.iter().max_by(|x, y| x.len.total_cmp(&y.len)) else { return };
     let (origin, u, n) = (r.a, r.u, r.u.perp());
-    // (t0, t1, index into cands)
-    let mut iv: Vec<(f64, f64, usize)> = members
+    // (t0, t1, member)
+    let mut iv: Vec<(f64, f64, &LineRec)> = members
         .iter()
         .filter(|m| (n.dot(m.a - origin)).abs() <= q && (n.dot(m.b - origin)).abs() <= q && (m.z - r.z).abs() <= q)
         .map(|m| {
             let (ta, tb) = (u.dot(m.a - origin), u.dot(m.b - origin));
-            (ta.min(tb), ta.max(tb), m.i)
+            (ta.min(tb), ta.max(tb), *m)
         })
         .collect();
     if iv.len() < 2 {
         return;
     }
-    iv.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.2.cmp(&y.2)));
+    iv.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.2.i.cmp(&y.2.i)));
     let mut it = iv.into_iter();
     let Some((mut k_t0, mut k_t1, mut keeper)) = it.next() else { return };
     let mut grown = false;
-    let finish = |keeper: usize, t0: f64, t1: f64, grown: bool, changed: &mut HashMap<usize, EntityKind>| {
-        if !grown {
+    let finish = |keeper: &LineRec, t0: f64, t1: f64, grown: bool, changed: &mut HashMap<usize, EntityKind>| {
+        if !grown || keeper.is_poly {
             return;
         }
-        let Some(c) = cands.get(keeper) else { return };
+        let Some(c) = cands.get(keeper.i) else { return };
         let EntityKind::Line(l) = &c.e.kind else { return };
         let (lo, hi) = (origin + u * t0, origin + u * t1);
         let forward = u.dot(l.b.xy() - l.a.xy()) >= 0.0;
@@ -387,10 +503,11 @@ fn collinear(members: &[&LineRec], cands: &[Cand], o: &Opts, gone: &mut [bool], 
         let mut l = l.clone();
         l.a = Vec3::new(a.x, a.y, l.a.z);
         l.b = Vec3::new(b.x, b.y, l.b.z);
-        changed.insert(keeper, EntityKind::Line(l));
+        changed.insert(keeper.i, EntityKind::Line(l));
     };
-    for (t0, t1, i) in it {
-        let absorb = if t1 <= k_t1 + q {
+    for (t0, t1, m) in it {
+        let would_grow = t1 > k_t1;
+        let base_absorb = if t1 <= k_t1 + q {
             true
         } else if t0 < k_t1 - q {
             o.partial
@@ -399,21 +516,33 @@ fn collinear(members: &[&LineRec], cands: &[Cand], o: &Opts, gone: &mut [bool], 
         } else {
             false
         };
+        // Never merge a polyline segment with another segment of the same object; never delete
+        // a non-terminal polyline segment; never grow a polyline-segment keeper.
+        let victim_ok = m.i != keeper.i && (!m.is_poly || m.term.is_some());
+        let absorb = base_absorb && victim_ok && (!would_grow || !keeper.is_poly);
         if absorb {
-            if t1 > k_t1 {
+            if would_grow {
                 k_t1 = t1;
                 grown = true;
             }
-            if let Some(g) = gone.get_mut(i) {
+            if m.is_poly {
+                let e = pl_trim.entry(m.i).or_insert((false, false));
+                match m.term {
+                    Some(true) => e.0 = true,
+                    Some(false) => e.1 = true,
+                    None => {}
+                }
+                rep.segments += 1;
+            } else if let Some(g) = gone.get_mut(m.i) {
                 *g = true;
                 rep.overlapping += 1;
             }
         } else {
-            finish(keeper, k_t0, k_t1, grown, changed);
-            (k_t0, k_t1, keeper, grown) = (t0, t1, i, false);
+            finish(&keeper, k_t0, k_t1, grown, changed);
+            (k_t0, k_t1, keeper, grown) = (t0, t1, m, false);
         }
     }
-    finish(keeper, k_t0, k_t1, grown, changed);
+    finish(&keeper, k_t0, k_t1, grown, changed);
 }
 
 /// Arcs and circles on the same circle: a circle covers every arc on it; arcs lying on another

@@ -145,6 +145,67 @@ fn polyline_segments() {
 }
 
 #[test]
+fn polyline_segment_overlaps_a_separate_line() {
+    // A LINE lying exactly on top of the *middle* segment of a longer LWPOLYLINE: the polyline
+    // (drawn first) is the keeper and stays untouched; the duplicate LINE is deleted.
+    let mut s = Session::new();
+    s.execute("pline", &json!({ "vertices": [[0, 0], [10, 0], [10, 10], [20, 10]] })).unwrap();
+    line(&mut s, [10.0, 0.0], [10.0, 10.0]);
+    assert_eq!(count(&s), 2);
+    let r = ok(&mut s, json!({ "plines": false }));
+    assert_eq!(r["deleted"], 0, "cross-segment comparison is gated by `plines`");
+    let r = ok(&mut s, json!({}));
+    assert_eq!((r["overlapping"].as_u64(), r["segments"].as_u64()), (Some(1), Some(0)), "{r}");
+    assert_eq!(count(&s), 1);
+    match &s.doc().unwrap().model.last().unwrap().kind {
+        EntityKind::LwPolyline(p) => assert_eq!(
+            p.vertices.iter().map(|v| [v.p.x, v.p.y]).collect::<Vec<_>>(),
+            [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [20.0, 10.0]],
+            "the polyline itself is untouched"
+        ),
+        k => panic!("{k:?}"),
+    }
+}
+
+#[test]
+fn two_polylines_share_an_overlapping_subsegment() {
+    // Two LWPOLYLINEs whose terminal segments partly coincide (not whole-object duplicates):
+    // the first-drawn polyline's longer segment is the keeper; the second's shorter, fully
+    // contained segment is trimmed off rather than the whole object being deleted.
+    let mut s = Session::new();
+    s.execute("pline", &json!({ "vertices": [[0, 0], [20, 0], [20, 10]] })).unwrap();
+    s.execute("pline", &json!({ "vertices": [[0, 0], [10, 0], [10, -10]] })).unwrap();
+    let r = ok(&mut s, json!({}));
+    assert_eq!((r["overlapping"].as_u64(), r["segments"].as_u64()), (Some(0), Some(1)), "{r}");
+    assert_eq!(count(&s), 2, "both objects survive: one trimmed, none fully consumed");
+    let plines: Vec<Vec<[f64; 2]>> = s
+        .doc()
+        .unwrap()
+        .model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EntityKind::LwPolyline(p) => Some(p.vertices.iter().map(|v| [v.p.x, v.p.y]).collect()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(plines[0], [[0.0, 0.0], [20.0, 0.0], [20.0, 10.0]], "the keeper is untouched");
+    assert_eq!(plines[1], [[10.0, 0.0], [10.0, -10.0]], "the duplicated front segment was trimmed off");
+}
+
+#[test]
+fn polyline_segment_fully_consumed_removes_the_object() {
+    // A whole 2-vertex (1-segment) open polyline whose single segment is wholly a duplicate of
+    // another, longer object's segment is reduced below 2 vertices and so is removed entirely.
+    let mut s = Session::new();
+    line(&mut s, [0.0, 0.0], [20.0, 0.0]);
+    s.execute("pline", &json!({ "vertices": [[5, 0], [15, 0]] })).unwrap();
+    let r = ok(&mut s, json!({}));
+    assert_eq!(r["segments"], 1, "{r}");
+    assert_eq!(count(&s), 1);
+    assert_eq!(lines(&s), [[0.0, 0.0, 20.0, 0.0]]);
+}
+
+#[test]
 fn associated_objects_stay() {
     let mut s = Session::new();
     let followed = line(&mut s, [0.0, 0.0], [10.0, 0.0]);

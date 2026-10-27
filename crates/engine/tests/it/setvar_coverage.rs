@@ -33,13 +33,35 @@ fn defaults_are_the_ones_the_commands_use() {
         ("CPLOTSTYLE", json!("ByLayer")),
         ("TRANSPARENCYDISPLAY", json!(1)),
         ("PLOTTRANSPARENCYOVERRIDE", json!(1)),
+        ("HPGAPTOL", json!(0.0)),
+        ("HPASSOC", json!(1)),
+        ("HPSEPARATE", json!(0)),
+        ("HPORIGINMODE", json!(0)),
+        ("HPISLANDDETECTION", json!(0)),
+        ("HPANNOTATIVE", json!(0)),
+        ("HPORIGIN", json!([0.0, 0.0])),
+        ("ARRAYASSOCIATIVITY", json!(1)),
+        ("DWGCODEPAGE", json!("ANSI_1252")),
     ] {
         assert_eq!(getvar(&mut s, name), v, "{name}");
     }
     // Lowercase names work; the list shows the new variables and the dimension variables.
     assert_eq!(getvar(&mut s, "circlerad"), json!(0.0));
     let all = cadcraft_engine::sysvars::list(&s);
-    for n in ["POLYSIDES", "SPLINESEGS", "CHAMFERD", "TRANSPARENCYDISPLAY", "DIMASZ", "OSMODE", "CLAYER"] {
+    for n in [
+        "POLYSIDES",
+        "SPLINESEGS",
+        "CHAMFERD",
+        "TRANSPARENCYDISPLAY",
+        "DIMASZ",
+        "OSMODE",
+        "CLAYER",
+        "HPGAPTOL",
+        "HPASSOC",
+        "HPORIGINMODE",
+        "ARRAYASSOCIATIVITY",
+        "DWGCODEPAGE",
+    ] {
         assert!(all.get(n).is_some(), "{n} listed");
     }
 }
@@ -64,6 +86,30 @@ fn values_reach_the_commands() {
     assert!(setvar(&mut s, "INSNAME", json!("Valve")));
     assert!(setvar(&mut s, "INSNAME", json!(".")));
     assert_eq!(getvar(&mut s, "INSNAME"), json!(""));
+    // New hatch/array defaults: set and read back, and reach the commands that use them.
+    assert!(setvar(&mut s, "HPGAPTOL", json!(2.5)));
+    assert_eq!(getvar(&mut s, "HPGAPTOL"), json!(2.5));
+    assert!(setvar(&mut s, "HPASSOC", json!(0)));
+    assert_eq!(getvar(&mut s, "HPASSOC"), json!(0));
+    assert!(setvar(&mut s, "HPSEPARATE", json!(1)));
+    assert_eq!(getvar(&mut s, "HPSEPARATE"), json!(1));
+    assert!(setvar(&mut s, "HPISLANDDETECTION", json!(2)));
+    assert_eq!(getvar(&mut s, "HPISLANDDETECTION"), json!(2));
+    assert!(setvar(&mut s, "HPANNOTATIVE", json!(1)));
+    assert_eq!(getvar(&mut s, "HPANNOTATIVE"), json!(1));
+    assert!(setvar(&mut s, "HPORIGINMODE", json!(5)));
+    assert_eq!(getvar(&mut s, "HPORIGINMODE"), json!(5));
+    assert!(setvar(&mut s, "HPORIGIN", json!([3.0, -4.0])));
+    assert_eq!(getvar(&mut s, "HPORIGIN"), json!([3.0, -4.0]));
+    assert!(setvar(&mut s, "DWGCODEPAGE", json!("ANSI_1251")));
+    assert_eq!(getvar(&mut s, "DWGCODEPAGE"), json!("ANSI_1251"));
+    // ARRAYASSOCIATIVITY 0 makes a new rectangular array's items separate copies, not a block.
+    let added = s.execute("line", &json!({ "points": [[0.0, 0.0], [1.0, 1.0]] })).unwrap();
+    let h = added["handles"][0].as_str().unwrap().to_string();
+    assert!(setvar(&mut s, "ARRAYASSOCIATIVITY", json!(0)));
+    let r = s.execute("arrayrect", &json!({ "handles": [h], "rows": 1, "cols": 3, "rowSpacing": 1.0, "colSpacing": 1.0 })).unwrap();
+    assert!(r.get("handle").is_none(), "not associative: no array block reference, got {r}");
+    assert_eq!(r["created"], json!(2));
 }
 
 #[test]
@@ -87,6 +133,14 @@ fn bad_values_and_unknown_names_are_refused() {
         ("CHAMFERD", json!("abc")),
         ("CPLOTSTYLE", json!("Style 1")),
         ("OFFSETDIST", json!(f64::MAX.to_string() + "0")),
+        ("HPASSOC", json!(2)),
+        ("HPSEPARATE", json!(-1)),
+        ("HPORIGINMODE", json!(6)),
+        ("HPISLANDDETECTION", json!(3)),
+        ("HPANNOTATIVE", json!("yes")),
+        ("HPORIGIN", json!("not a point")),
+        ("ARRAYASSOCIATIVITY", json!(2)),
+        ("DWGCODEPAGE", json!("NO-SUCH-CODEPAGE")),
     ] {
         assert!(!setvar(&mut s, name, v.clone()), "{name} = {v} refused");
     }

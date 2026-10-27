@@ -190,6 +190,27 @@ fn mledit_tees_and_corner() {
 }
 
 #[test]
+fn mledit_tee_mitres_an_angled_crossing() {
+    // A horizontal multiline tee'd into one crossing it at 45 degrees: a proper tee mitres each
+    // element back to where THAT element meets the near edge of the diagonal one, instead of
+    // squaring every element off at the single point where the centrelines cross (the F21 bug).
+    let mut s = Session::new();
+    let a = h(&s.execute("mline", &json!({"points": [[0, 0], [10, 0]], "justification": "zero", "scale": 2})).unwrap());
+    let b = h(&s.execute("mline", &json!({"points": [[0, -5], [10, 5]], "justification": "zero", "scale": 2})).unwrap());
+    s.execute("mledit", &json!({"tool": "ct", "first": a.hex(), "p1": [1, 0], "second": b.hex(), "p2": [5, 0]})).unwrap();
+    let m = mline(&s, a);
+    // The centrelines cross at x = 5 - 1/sqrt(2); the farther-reaching element (offset +1) meets
+    // the diagonal's near edge at x = 1 past that, and the shared vertex has to reach it.
+    assert!((m.points()[1].x - 4.585_786_437_626_905).abs() < 1e-6, "{:?}", m.points());
+    let p = pieces(&m);
+    assert_eq!(p.len(), 2, "{p:?}");
+    // Not a square cut: the two elements end at two DIFFERENT x positions, each exactly where
+    // that element (offset -1, then offset +1) crosses the diagonal's near edge.
+    assert!((p[0][2] - 2.585_786_437_626_905).abs() < 1e-6, "{p:?}");
+    assert!((p[1][2] - 4.585_786_437_626_905).abs() < 1e-6, "{p:?}");
+}
+
+#[test]
 fn mledit_vertices_cuts_and_welds() {
     let mut s = Session::new();
     let a = h(&s.execute("mline", &json!({"points": [[0, 0], [10, 0]], "justification": "zero", "scale": 2})).unwrap());

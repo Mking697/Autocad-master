@@ -26,6 +26,10 @@ enum Kind {
     Name,
     /// Text set by its own command, not by SETVAR.
     ReadOnlyStr,
+    /// An X,Y point (Z always 0).
+    Point,
+    /// A DXF code page name (e.g. `ANSI_1252`) `cadcraft_dxf::decode_code_page` recognizes.
+    CodePage,
 }
 
 /// A default that may depend on the drawing's units (MEASUREMENT 1 = metric).
@@ -40,6 +44,7 @@ enum Def {
 
 /// Header variables: name, kind, the default the commands use while the header has none.
 const HEADER: &[(&str, Kind, Def)] = &[
+    ("ARRAYASSOCIATIVITY", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("CENTEREXE", Kind::Real { min: 0.0, strict: false }, Def::Units(0.12, 3.5)),
     ("CHAMFERA", Kind::Real { min: 0.0, strict: false }, Def::Real(0.0)),
     ("CHAMFERB", Kind::Real { min: 0.0, strict: false }, Def::Real(0.0)),
@@ -53,12 +58,28 @@ const HEADER: &[(&str, Kind, Def)] = &[
     ("DIMASSOC", Kind::Choice(&[0, 1, 2]), Def::Int(2)),
     ("DONUTID", Kind::Real { min: 0.0, strict: false }, Def::Real(0.5)),
     ("DONUTOD", Kind::Real { min: 0.0, strict: true }, Def::Real(1.0)),
+    // Read by the DXF writer for files before 2007 when it names a code page CADCraft knows.
+    ("DWGCODEPAGE", Kind::CodePage, Def::Str("ANSI_1252")),
     ("EDGEMODE", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("HPANG", Kind::Angle, Def::Real(0.0)),
+    // HATCH/GRADIENT's own annotative flag, independent of the object's layer or style.
+    ("HPANNOTATIVE", Kind::Choice(&[0, 1]), Def::Int(0)),
+    // HATCH's ASsociative option default (new hatches follow their boundary unless overridden).
+    ("HPASSOC", Kind::Choice(&[0, 1]), Def::Int(1)),
     // 1: HATCH and GRADIENT typed or from a menu open the Hatch and Gradient dialog; 0: the command line.
     ("HPDLGMODE", Kind::Choice(&[0, 1]), Def::Int(1)),
+    // HPGAPTOL: the widest gap HATCH still closes a boundary across, 0-5000 drawing units.
+    ("HPGAPTOL", Kind::Real { min: 0.0, strict: false }, Def::Real(0.0)),
+    // HATCH's island detection style default: 0 normal, 1 outer, 2 ignore.
+    ("HPISLANDDETECTION", Kind::Choice(&[0, 1, 2]), Def::Int(0)),
     ("HPNAME", Kind::Pattern, Def::Str("ANSI31")),
+    // The hatch pattern's origin point when HPORIGINMODE keeps the stored origin (0).
+    ("HPORIGIN", Kind::Point, Def::Real(0.0)),
+    // Where a new hatch's pattern starts: 0 the stored HPORIGIN, 1-4 a boundary corner, 5 its centre.
+    ("HPORIGINMODE", Kind::Choice(&[0, 1, 2, 3, 4, 5]), Def::Int(0)),
     ("HPSCALE", Kind::Real { min: 0.0, strict: true }, Def::Real(1.0)),
+    // HATCH's SEparate option default (one hatch per picked point/object instead of one for all).
+    ("HPSEPARATE", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("INSNAME", Kind::Name, Def::Str("")),
     ("LWDEFAULT", Kind::Choice(&LINEWEIGHTS), Def::Int(25)),
     // Negative: Through (OFFSET picks a point).
@@ -120,6 +141,10 @@ pub(super) fn get(s: &Session, name: &str) -> Option<Value> {
     Some(match (kind, def) {
         (Kind::Choice(_) | Kind::Int(..), Def::Int(i)) => json!(h.i64(name, *i)),
         (Kind::Angle, _) => json!(h.f64(name, real_def).to_degrees()),
+        (Kind::Point, _) => {
+            let p = h.point(name).unwrap_or(cadcraft_geom::Vec3::ZERO);
+            json!([p.x, p.y])
+        }
         (_, Def::Str(t)) => json!(h.str(name, t)),
         _ => json!(h.f64(name, real_def)),
     })
@@ -190,6 +215,15 @@ fn set_header(s: &mut Session, name: &str, kind: Kind, v: &Value, bad: impl Fn(S
             let t = v.as_str().map(str::trim).filter(|t| t.chars().count() <= 255).ok_or_else(|| bad("a name, or . for none".into()))?;
             let t = if t == "." { "" } else { t };
             s.doc_mut()?.header.set_str(name, t);
+        }
+        Kind::Point => {
+            let p = super::as_pt(v).filter(|p| p.is_finite()).ok_or_else(|| bad("a point".into()))?;
+            s.doc_mut()?.header.set(name, cadcraft_doc::HVal::Point(p.to3(0.0)));
+        }
+        Kind::CodePage => {
+            let p = v.as_str().map(str::trim).filter(|t| cadcraft_dxf::decode_code_page(b"", t).is_some());
+            let p = p.ok_or_else(|| bad("a known DXF code page name, e.g. ANSI_1252".into()))?;
+            s.doc_mut()?.header.set_str(name, p);
         }
         Kind::ReadOnlyStr => return Err(EngineError::BadParams { cmd: "setvar".into(), msg: format!("{name} is read-only") }),
     }

@@ -580,6 +580,7 @@ fn mledit_pair(s: &mut Session, tool: Tool, ha: Handle, pa: Vec2, hb: Handle, pb
         }
         Tool::ClosedTee | Tool::OpenTee | Tool::MergedTee => {
             let path = path_seg(&a, k).ok_or_else(|| other("*Invalid selection*"))?;
+            let am = a.miters();
             let bm = b.miters();
             let (top, bottom) = outer(&bo).ok_or_else(|| other("*Invalid selection*"))?;
             let line = |e: usize| bo.get(e).and_then(|d| element_line(&b, &bm, u, *d));
@@ -603,26 +604,43 @@ fn mledit_pair(s: &mut Session, tool: Tool, ha: Handle, pa: Vec2, hb: Handle, pb
             } else {
                 None
             };
-            a = trim_at(&a, k, inner.unwrap_or(at), keep_before).ok_or_else(|| other("Nothing would be left of the first multiline."))?;
+            // Which of `a`'s own elements get mitred back to the near edge: every one of them,
+            // unless this is a merged tee with an inner element to run through — then only its
+            // own outer pair is cut back; the inner elements run on (AutoCAD's merged tee).
+            let to_cut: Vec<usize> = if inner.is_some() {
+                outer(&ao).map(|(t, b)| if t == b { vec![t] } else { vec![t, b] }).unwrap_or_default()
+            } else {
+                (0..ao.len()).collect()
+            };
+            // Each element's own meeting point with the near edge: equal to the centreline's
+            // `at` when the tee is square to `b`, different when it is angled — trimming every
+            // element to the single centreline point `at` is the "square" bug this fixes.
+            let elem_meets: Vec<(usize, f64)> =
+                to_cut.iter().filter_map(|&e| Some((e, meet(&element_line(&a, &am, k, *ao.get(e)?)?, &near)?))).collect();
+            let base = inner.unwrap_or(at);
+            let extreme = elem_meets.iter().map(|(_, x)| *x).fold(base, |acc, x| if keep_before { acc.max(x) } else { acc.min(x) });
+            a = trim_at(&a, k, extreme, keep_before).ok_or_else(|| other("Nothing would be left of the first multiline."))?;
+            // Mitre: cut each element back from the shared vertex to its own meeting point with
+            // the near edge (a proper trimmed/mitred tee), instead of leaving every element
+            // squared off at the single farthest-reaching element's length.
+            let ak = if keep_before { a.vertices.len().saturating_sub(2) } else { 0 };
+            let (am2, ao2) = (a.miters(), a.offsets());
+            for (e, want) in &elem_meets {
+                if (want - extreme).abs() < 1e-9 {
+                    continue;
+                }
+                let Some(l) = ao2.get(*e).and_then(|d| element_line(&a, &am2, ak, *d)) else { continue };
+                let Some(x) = meet(&l, &near) else { continue };
+                add_cut(&mut a, ak, *e, x, if keep_before { l.len() } else { 0.0 });
+            }
             if tool != Tool::ClosedTee {
                 // Open the near outer element of the second multiline where the first meets it.
-                let ak = if keep_before { a.vertices.len().saturating_sub(2) } else { 0 };
-                let (am, aoff) = (a.miters(), a.offsets());
+                let (am3, aoff) = (a.miters(), a.offsets());
                 if let Some((t2, b2)) = outer(&aoff) {
-                    let al = |e: usize| aoff.get(e).and_then(|d| element_line(&a, &am, ak, *d));
+                    let al = |e: usize| aoff.get(e).and_then(|d| element_line(&a, &am3, ak, *d));
                     let (lt2, lb2) = (al(t2), al(b2));
                     if let (Some(x), Some(y)) = (lt2.and_then(|l| meet(&near, &l)), lb2.and_then(|l| meet(&near, &l))) {
                         add_cut(&mut b, u, near_e, x, y);
-                    }
-                    // ...and the first one's outer elements stop at it.
-                    if inner.is_some() {
-                        for (e, l) in [(t2, lt2), (b2, lb2)] {
-                            if let Some(l) = l
-                                && let Some(x) = meet(&l, &near)
-                            {
-                                add_cut(&mut a, ak, e, x, if keep_before { l.len() } else { 0.0 });
-                            }
-                        }
                     }
                 }
             }

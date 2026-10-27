@@ -3,8 +3,15 @@
 //! then by handle: the same handle with other geometry or properties is a change. What is left
 //! is only in this drawing or only in the other. The comparison stays on the session for the
 //! canvas overlay, next/previous navigation and COMPAREEXPORT until COMPARECLOSE.
+//!
+//! With `allTabs: true`, COMPARE also reports a diff per space (model plus every paper-space
+//! layout present in either drawing, matched by name): the `tabs` array in the result, one
+//! entry per space in the shape of the top-level result minus `other`, `regions` and `message`.
+//! A layout only one drawing has is diffed against an empty space, so it comes back fully
+//! added or fully removed. The overlay, next/previous navigation and COMPAREEXPORT still only
+//! cover the tab shown when COMPARE ran (`allTabs` does not change what they operate on).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -69,8 +76,9 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("compare", "Compare Drawings...", run_compare)
             .menu(&["Tools", "Compare Drawings..."])
             .params(
-                "{path} | {data: base64, name} | {document: index or title} → {other, added: [{handle, type}], removed, \
-                 changed: [{handle, other, type, what}], counts: {added, removed, changed, common}, regions, truncated, message}",
+                "{path} | {data: base64, name} | {document: index or title}, {allTabs: bool} → {other, added: [{handle, type}], \
+                 removed, changed: [{handle, other, type, what}], counts: {added, removed, changed, common}, regions, truncated, \
+                 message, tabs: [{space, added, removed, changed, counts, truncated}] (with `allTabs`)}",
             )
             .noundo()
             .interactive(|_| Ok(Box::new(CompareM))),
@@ -365,6 +373,74 @@ fn listed(d: &Drawing, hs: &[Handle]) -> Vec<Value> {
     hs.iter().take(MAX_LISTED).filter_map(|h| d.entity(*h)).map(|e| json!({ "handle": e.handle.hex(), "type": e.kind.type_name() })).collect()
 }
 
+/// The name a space is shown under: `Model` for model space, the layout's own name for paper
+/// space.
+fn space_label(space: &Space) -> String {
+    match space {
+        Space::Model => "Model".to_string(),
+        Space::Paper(n) => n.clone(),
+    }
+}
+
+/// A key identifying a space case-insensitively, for deduplicating the spaces of two drawings.
+fn space_key(space: &Space) -> String {
+    match space {
+        Space::Model => "\u{0}model".to_string(),
+        Space::Paper(n) => format!("paper:{}", n.to_ascii_lowercase()),
+    }
+}
+
+/// Every space to compare for `allTabs`: model space, then every paper-space layout either
+/// drawing has, in this drawing's tab order followed by the other drawing's layouts this one
+/// lacks. Deduplicated by name (case-insensitive).
+fn all_spaces(cur: &Drawing, other: &Drawing) -> Vec<Space> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for space in std::iter::once(Space::Model)
+        .chain(cur.layouts.iter().map(|l| Space::Paper(l.name.clone())))
+        .chain(other.layouts.iter().map(|l| Space::Paper(l.name.clone())))
+    {
+        if seen.insert(space_key(&space)) {
+            out.push(space);
+        }
+    }
+    out
+}
+
+/// A `compare` result for one space (model or a named layout), in the shape of the top-level
+/// result minus `other`, `regions` and `message`. A space missing from one drawing diffs
+/// against an empty one, so it comes back fully added or fully removed.
+fn tab_result(cur: &Drawing, other: &Drawing, space: &Space) -> Value {
+    let Diff { added, removed, changed, common, truncated } = diff(cur, other, space);
+    let ch = changed_listed(cur, &changed);
+    json!({
+        "space": space_label(space),
+        "added": listed(cur, &added),
+        "removed": listed(other, &removed),
+        "changed": ch,
+        "counts": { "added": added.len(), "removed": removed.len(), "changed": changed.len(), "common": common },
+        "truncated": truncated,
+    })
+}
+
+/// The JSON form of a diff's changed entries (`{handle, other, type, what}`), capped at
+/// [`MAX_LISTED`].
+fn changed_listed(cur: &Drawing, changed: &[(Handle, Handle, bool, bool)]) -> Vec<Value> {
+    changed
+        .iter()
+        .take(MAX_LISTED)
+        .filter_map(|(a, b, geom, props)| {
+            let x = cur.entity(*a)?;
+            let what = match (geom, props) {
+                (true, true) => "geometry and properties",
+                (true, false) => "geometry",
+                _ => "properties",
+            };
+            Some(json!({ "handle": a.hex(), "other": b.hex(), "type": x.kind.type_name(), "what": what }))
+        })
+        .collect()
+}
+
 fn run_compare(s: &mut Session, p: &Value) -> Result<Value> {
     let (other, name) = other_drawing(s, p)?;
     let other_path = export::source_path(s, p, &other);
@@ -387,19 +463,7 @@ fn run_compare(s: &mut Session, p: &Value) -> Result<Value> {
         bound(&other, *b);
     }
     let regions = regions(&boxes);
-    let ch: Vec<Value> = changed
-        .iter()
-        .take(MAX_LISTED)
-        .filter_map(|(a, b, geom, props)| {
-            let x = cur.entity(*a)?;
-            let what = match (geom, props) {
-                (true, true) => "geometry and properties",
-                (true, false) => "geometry",
-                _ => "properties",
-            };
-            Some(json!({ "handle": a.hex(), "other": b.hex(), "type": x.kind.type_name(), "what": what }))
-        })
-        .collect();
+    let ch = changed_listed(&cur, &changed);
     let message = format!(
         "Compared with {name}: {} only in this drawing, {} only in {name}, {} changed, {common} the same{}.",
         added.len(),
@@ -407,7 +471,7 @@ fn run_compare(s: &mut Session, p: &Value) -> Result<Value> {
         changed.len(),
         if truncated { format!(" (only the first {MAX_OBJECTS} objects of each were compared)") } else { String::new() }
     );
-    let out = json!({
+    let mut out = json!({
         "other": name,
         "added": listed(&cur, &added),
         "removed": listed(&other, &removed),
@@ -417,6 +481,15 @@ fn run_compare(s: &mut Session, p: &Value) -> Result<Value> {
         "truncated": truncated,
         "message": message,
     });
+    if p.get("allTabs").and_then(Value::as_bool).unwrap_or(false) {
+        let tabs: Vec<Value> = all_spaces(&cur, &other)
+            .iter()
+            .map(|sp| if *sp == space { json!({ "space": space_label(&space), "added": out["added"].clone(), "removed": out["removed"].clone(), "changed": out["changed"].clone(), "counts": out["counts"].clone(), "truncated": truncated }) } else { tab_result(&cur, &other, sp) })
+            .collect();
+        if let Some(map) = out.as_object_mut() {
+            map.insert("tabs".to_string(), json!(tabs));
+        }
+    }
     let changed = changed.into_iter().map(|(a, b, _, _)| (a, b)).collect();
     s.compare = Some(Comparison { uid, space, other_name: name, other, other_path, added, removed, changed, common, truncated, regions, at: None });
     s.touch();

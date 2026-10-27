@@ -104,6 +104,52 @@ fn navigates_areas_and_closes() {
     assert!(s.compare.is_none());
 }
 
+/// COMPARE F22: `allTabs` compares every space at once instead of only the tab shown.
+#[test]
+fn all_tabs_reports_model_and_layout_differences() {
+    let mut s = base();
+    // A line in Layout1, present identically in both drawings until B's copy is edited below.
+    s.doc_mut().unwrap().add(&Space::Paper("Layout1".into()), Common::default(), line(0.0, 0.0, 1.0, 0.0)).unwrap();
+    edited_copy(&mut s); // opens "B": the circle moves, the text goes, an arc comes (model space)
+    let layout_line = s.doc().unwrap().space(&Space::Paper("Layout1".into())).unwrap().iter().next().unwrap().handle;
+    s.execute("erase", &json!({"handles": [layout_line.hex()]})).unwrap();
+    s.doc_mut().unwrap().add(&Space::Paper("Layout1".into()), Common::default(), line(5.0, 5.0, 6.0, 6.0)).unwrap();
+
+    // Without `allTabs`, only the current tab (Model) is reported, exactly as before.
+    let r = s.execute("compare", &json!({"document": "drawing1"})).unwrap();
+    assert_eq!(counts(&r), (1, 1, 1, 1), "{r}");
+    assert!(r.get("tabs").is_none(), "no `tabs` field when `allTabs` is not given: {r}");
+
+    // With `allTabs: true`, Model and Layout1 are both reported.
+    let r = s.execute("compare", &json!({"document": "drawing1", "allTabs": true})).unwrap();
+    assert_eq!(counts(&r), (1, 1, 1, 1), "the top-level result still covers only the current tab: {r}");
+    let tabs = r["tabs"].as_array().expect("tabs array");
+    assert_eq!(tabs.len(), 3, "Model, Layout1 and the drawing's default Layout2: {r}");
+    let model = tabs.iter().find(|t| t["space"] == "Model").expect("Model tab");
+    assert_eq!(counts(model), (1, 1, 1, 1), "{model}");
+    let layout = tabs.iter().find(|t| t["space"] == "Layout1").expect("Layout1 tab");
+    assert_eq!(counts(layout), (1, 1, 0, 0), "{layout}");
+}
+
+/// COMPARE F22: a layout only one of the two drawings has comes back fully added or removed.
+#[test]
+fn all_tabs_reports_a_layout_only_one_drawing_has() {
+    let mut s = base();
+    edited_copy(&mut s); // opens "B", the clone this session stays on
+    // Only "Drawing1" (the other drawing in the compare below) puts objects in Layout2.
+    s.execute("document.switch", &json!({"index": 0})).unwrap();
+    s.doc_mut().unwrap().add(&Space::Paper("Layout2".into()), Common::default(), line(0.0, 0.0, 2.0, 0.0)).unwrap();
+    s.doc_mut().unwrap().add(&Space::Paper("Layout2".into()), Common::default(), line(0.0, 0.0, 3.0, 0.0)).unwrap();
+    s.execute("document.switch", &json!({"index": 1})).unwrap();
+
+    let r = s.execute("compare", &json!({"document": "drawing1", "allTabs": true})).unwrap();
+    let tabs = r["tabs"].as_array().expect("tabs array");
+    assert_eq!(tabs.len(), 3, "Model, Layout1 and Layout2: {r}");
+    let layout2 = tabs.iter().find(|t| t["space"] == "Layout2").expect("Layout2 tab");
+    // "B" (this drawing) has no objects in Layout2: Drawing1's 2 objects are only there (removed).
+    assert_eq!(counts(layout2), (0, 2, 0, 0), "{layout2}");
+}
+
 /// The file-reading hook both tests here share (it is set once per process). Test file format:
 /// "xref" is a drawing with a reference to xref Y at `y.dwg`; a number x is a drawing holding a
 /// line from 0,0 to x,0.
