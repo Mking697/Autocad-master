@@ -102,6 +102,14 @@ pub fn specs() -> Vec<CommandSpec> {
 // ---------------- core operations ----------------
 
 pub(crate) fn transform_entities(s: &mut Session, hs: &[Handle], m: &Mat3, copy: bool) -> Result<Vec<Handle>> {
+    Ok(transform_entities_mapped(s, hs, m, copy)?.into_iter().map(|(_, nh)| nh).collect())
+}
+
+/// [`transform_entities`], but also returning each original handle paired with the handle the
+/// operation left behind for it (itself when moved in place, a new handle when copied). Lets a
+/// copy-producing command tell which new objects correspond to which originals, e.g. to carry
+/// group membership over to the copies (`groups::clone_groups_for_copy`).
+pub(crate) fn transform_entities_mapped(s: &mut Session, hs: &[Handle], m: &Mat3, copy: bool) -> Result<Vec<(Handle, Handle)>> {
     let d = s.doc_mut()?;
     let mut out = Vec::new();
     for h in hs {
@@ -113,7 +121,7 @@ pub(crate) fn transform_entities(s: &mut Session, hs: &[Handle], m: &Mat3, copy:
             ne.kind.transform(m);
             if let Some(st) = d.space_mut(&sp) {
                 st.push(ne);
-                out.push(nh);
+                out.push((*h, nh));
             }
         } else {
             let locked = d.entity(*h).and_then(|e| d.layer(&e.common.layer)).is_some_and(|l| l.locked);
@@ -121,7 +129,7 @@ pub(crate) fn transform_entities(s: &mut Session, hs: &[Handle], m: &Mat3, copy:
                 continue;
             }
             d.modify_entity(*h, |e| e.kind.transform(m))?;
-            out.push(*h);
+            out.push((*h, *h));
         }
     }
     Ok(out)
@@ -168,7 +176,9 @@ fn run_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let n = p.get("count").and_then(Value::as_u64).unwrap_or(1).clamp(1, 10_000);
     let mut out = Vec::new();
     for k in 1..=n {
-        out.extend(transform_entities(s, &hs, &Mat3::translate(d * k as f64), true)?.into_iter().map(|h| h.hex()));
+        let pairs = transform_entities_mapped(s, &hs, &Mat3::translate(d * k as f64), true)?;
+        super::groups::clone_groups_for_copy(s, &hs, &pairs)?;
+        out.extend(pairs.into_iter().map(|(_, nh)| nh.hex()));
     }
     Ok(json!({ "handles": out }))
 }

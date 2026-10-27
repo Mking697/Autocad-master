@@ -11,7 +11,8 @@ use super::{CommandSpec, bad, bool_or, f64_req, point_req, point_value, points_p
 use crate::units::{format_angle, format_distance};
 use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step};
 
-mod loops;
+// BOQ shares the read-only detector with an explicit space; the LOOPS command is unchanged.
+pub(super) mod loops;
 mod regions;
 mod shapes;
 mod usage;

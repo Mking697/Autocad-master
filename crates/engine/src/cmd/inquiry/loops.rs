@@ -76,6 +76,12 @@ struct Traversed {
 }
 
 pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
+    let st = s.state()?;
+    analyze(&st.doc, &st.space, p)
+}
+
+/// Read-only analysis shared with BOQ without changing the active space.
+pub(crate) fn analyze(d: &cadcraft_doc::Drawing, space: &cadcraft_doc::Space, p: &Value) -> Result<Value> {
     let given = |k: &str| p.get(k).filter(|v| !v.is_null());
     let count = |k: &str, default: usize| -> Result<usize> {
         given(k).map_or(Ok(default), |v| {
@@ -88,11 +94,8 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let tolerance = given("tolerance")
         .map(|v| v.as_f64().filter(|t| t.is_finite() && *t > 0.0).ok_or_else(|| bad(CMD, "`tolerance` must be a positive number")))
         .transpose()?;
-    let s: &Session = s;
-    let st = s.state()?;
-    let d = &st.doc;
     let tol = tolerance.unwrap_or_else(|| {
-        let ext = d.extents(&st.space);
+        let ext = d.extents(space);
         if ext.is_empty() {
             return MIN_TOLERANCE;
         }
@@ -100,7 +103,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
         if diag.is_finite() { (diag * 1e-9).max(MIN_TOLERANCE) } else { MIN_TOLERANCE }
     });
     let mut skipped: Skipped = BTreeMap::new();
-    let Some(store) = d.space(&st.space) else {
+    let Some(store) = d.space(space) else {
         return Ok(empty_report(offset, tol, 0, 0, pair_limit, false, skipped));
     };
     let pieces: Vec<Piece> = store.iter().filter_map(|e| chainable(e.handle, &e.kind, &mut skipped)).collect();

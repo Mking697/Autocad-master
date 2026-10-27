@@ -2,14 +2,19 @@
 //! users normally do this via Data Extraction or external tools). Scans a drawing's entities and
 //! reports draft quantity totals for estimating: length (lines, polylines, arcs), area (closed
 //! polylines, circles), and block reference counts, grouped by layer. This is a first, basic
-//! step toward automatic quantity takeoff from a drawing. An optional `rates` map turns those
-//! quantities into a per-layer cost and a grand total, and an optional `exportCsv` path writes
-//! the same breakdown to a CSV file, so a basic estimate can be produced without leaving the
-//! engine (JSON in, spreadsheet/report out).
+//! step toward automatic quantity takeoff from a drawing. An optional `rates` map (or `ratesFile`
+//! JSON file) turns those quantities into a per-layer cost and a grand total, and an optional
+//! `exportCsv` path writes the same breakdown to a CSV file, so a basic estimate can be produced
+//! without leaving the engine (JSON in, spreadsheet/report out).
+//!
+//! Real drawings often draw a room's boundary as several separate LINE/ARC entities that happen
+//! to close up, rather than one LwPolyline. BOQ reuses `inquiry::loops`'s endpoint-chaining logic
+//! (read-only, unchanged) to find those implied closed loops and adds their area to the total —
+//! see `add_implied_loop_areas` for the exact double-counting rule.
 
 use std::collections::BTreeMap;
 
-use cadcraft_doc::{EntityKind, Space};
+use cadcraft_doc::{EntityKind, Handle, Space};
 use cadcraft_geom::Polyline;
 use serde_json::{Value, json};
 
@@ -19,8 +24,11 @@ use crate::{Result, Session};
 /// BOQ's JSON parameters.
 pub(super) const PARAMS: &str = "{space?: current|model|all (default all)|<layout>, \
     rates?: {<layer>|default: {ratePerLength?, ratePerArea?, ratePerBlock?, blockRates?: {<block>: rate}}}, \
+    ratesFile?: path (a JSON file shaped like `rates`; used only when `rates` itself is not given), \
+    includeImpliedLoops?: boolean (default false; gross XY areas, no hole/overlap subtraction), \
     exportCsv?: path} → \
     {layers: {layer: {lengthTotal, areaTotal, blocks: {name: count}}}, costByLayer?, totalCost?, \
+    impliedLoopCount, impliedLoops: [{layer, area, members: [handle]}], \
     csvPath?, entityCount, message}";
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -73,7 +81,8 @@ fn parse_rate(cmd: &str, layer: &str, v: &Value) -> Result<LayerRate> {
     let num = |key: &str| -> Result<Option<f64>> {
         match o.get(key) {
             None | Some(Value::Null) => Ok(None),
-            Some(Value::Number(n)) => Ok(n.as_f64()),
+            Some(Value::Number(n)) => n.as_f64().filter(|r| r.is_finite() && *r >= 0.0).map(Some)
+                .ok_or_else(|| bad(cmd, format!("`rates.{layer}.{key}` must be finite and nonnegative"))),
             Some(v) => Err(bad(cmd, format!("`rates.{layer}.{key}` must be a number, got {v}"))),
         }
     };
@@ -88,8 +97,8 @@ fn parse_rate(cmd: &str, layer: &str, v: &Value) -> Result<LayerRate> {
                 let Value::Number(n) = rv else {
                     return Err(bad(cmd, format!("`rates.{layer}.blockRates.{name}` must be a number, got {rv}")));
                 };
-                let Some(r) = n.as_f64() else {
-                    return Err(bad(cmd, format!("`rates.{layer}.blockRates.{name}` is not a finite number")));
+                let Some(r) = n.as_f64().filter(|r| r.is_finite() && *r >= 0.0) else {
+                    return Err(bad(cmd, format!("`rates.{layer}.blockRates.{name}` must be finite and nonnegative")));
                 };
                 block_rates.insert(name.clone(), r);
             }
@@ -99,18 +108,55 @@ fn parse_rate(cmd: &str, layer: &str, v: &Value) -> Result<LayerRate> {
     Ok(LayerRate { per_length, per_area, per_block, block_rates })
 }
 
+/// A full rates table: a map of layer name (or `"default"`) to a [`LayerRate`].
+fn parse_rate_table(cmd: &str, o: &serde_json::Map<String, Value>) -> Result<BTreeMap<String, LayerRate>> {
+    let mut out = BTreeMap::new();
+    for (layer, v) in o {
+        out.insert(layer.clone(), parse_rate(cmd, layer, v)?);
+    }
+    Ok(out)
+}
+
 /// The `rates` parameter: a map of layer name (or `"default"`) to a [`LayerRate`].
 fn parse_rates(cmd: &str, p: &Value) -> Result<Option<BTreeMap<String, LayerRate>>> {
     match p.get("rates") {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Object(o)) => {
-            let mut out = BTreeMap::new();
-            for (layer, v) in o {
-                out.insert(layer.clone(), parse_rate(cmd, layer, v)?);
-            }
-            Ok(Some(out))
-        }
+        Some(Value::Object(o)) => Ok(Some(parse_rate_table(cmd, o)?)),
         Some(v) => Err(bad(cmd, format!("`rates` must be an object, got {v}"))),
+    }
+}
+
+/// `ratesFile`: a JSON file on disk shaped like `rates`, read only when `rates` itself was not
+/// given inline. A missing file, unreadable path or malformed JSON is a normal `bad` error, never
+/// a panic.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_rates_file(cmd: &str, path: &str) -> Result<BTreeMap<String, LayerRate>> {
+    use std::io::Read;
+    const MAX_RATES_BYTES: u64 = 1_048_576;
+    let file = std::fs::File::open(path).map_err(|e| bad(cmd, format!("`ratesFile` {path}: {e}")))?;
+    let mut text = String::new();
+    file.take(MAX_RATES_BYTES + 1).read_to_string(&mut text).map_err(|e| bad(cmd, format!("`ratesFile` {path}: {e}")))?;
+    if text.len() as u64 > MAX_RATES_BYTES {
+        return Err(bad(cmd, "`ratesFile` exceeds the 1 MiB limit"));
+    }
+    let value: Value = serde_json::from_str(&text).map_err(|e| bad(cmd, format!("`ratesFile` {path}: invalid JSON: {e}")))?;
+    let Value::Object(o) = &value else { return Err(bad(cmd, format!("`ratesFile` {path} must contain a JSON object, got {value}"))) };
+    parse_rate_table(cmd, o)
+}
+#[cfg(target_arch = "wasm32")]
+fn read_rates_file(cmd: &str, _path: &str) -> Result<BTreeMap<String, LayerRate>> {
+    Err(bad(cmd, "ratesFile is not available on the web; there is no file system"))
+}
+
+/// `rates` if given inline, else the table loaded from `ratesFile`, else `None`.
+fn resolve_rates(cmd: &str, p: &Value) -> Result<Option<BTreeMap<String, LayerRate>>> {
+    if let Some(rates) = parse_rates(cmd, p)? {
+        return Ok(Some(rates));
+    }
+    match p.get("ratesFile") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(path)) => Ok(Some(read_rates_file(cmd, path)?)),
+        Some(v) => Err(bad(cmd, format!("`ratesFile` must be a path, got {v}"))),
     }
 }
 
@@ -150,6 +196,34 @@ fn write_csv(cmd: &str, path: &str, totals: &BTreeMap<String, LayerTotals>, rate
     }
 }
 
+/// Add implied closed-loop areas (loose LINE/ARC chains that close up, detected by
+/// `inquiry::loops`) to `totals`, and return the JSON entries describing each loop picked up this
+/// way.
+///
+/// Double-counting rule: a LINE or ARC that takes part in a detected implied loop still
+/// contributes its own length to `lengthTotal` exactly as it always did (walls have a real linear
+/// length for takeoff purposes too, e.g. skirting board or coping) — this function does not touch
+/// `length`. On top of that, each implied loop's `area` (computed once by `loops`, not
+/// re-tessellated here) is added once to `areaTotal`, keyed by the layer of the loop's first
+/// member entity (its "effective layer"). Each detector cycle is visited once, and LwPolyline
+/// entities cannot be members. This is a gross-area estimate: coincident independent geometry,
+/// overlaps and nested boundaries are not deduplicated or subtracted (hence the opt-in flag).
+fn add_implied_loop_areas(d: &cadcraft_doc::Drawing, loops_report: &Value, totals: &mut BTreeMap<String, LayerTotals>) -> Result<Vec<Value>> {
+    let mut implied = Vec::new();
+    let Some(loops) = loops_report.get("loops").and_then(Value::as_array) else { return Ok(implied) };
+    for lp in loops {
+        let Some(members) = lp.get("members").and_then(Value::as_array) else { continue };
+        let Some(first_hex) = members.first().and_then(Value::as_str) else { continue };
+        let Some(handle) = Handle::parse_hex(first_hex) else { continue };
+        let Some(layer) = d.entity(handle).map(|e| e.common.layer.clone()) else { continue };
+        let area = lp.get("area").and_then(Value::as_f64).filter(|a| a.is_finite() && *a >= 0.0)
+            .ok_or_else(|| bad("boq", "implied loop has invalid area"))?;
+        totals.entry(layer.clone()).or_default().area += area;
+        implied.push(json!({ "layer": layer, "area": area, "members": members.clone() }));
+    }
+    Ok(implied)
+}
+
 fn run_boq(s: &mut Session, p: &Value) -> Result<Value> {
     let d = s.doc()?;
     let scope = match p.get("space") {
@@ -174,7 +248,7 @@ fn run_boq(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
 
-    let rates = parse_rates("boq", p)?;
+    let rates = resolve_rates("boq", p)?;
     let csv_path = match p.get("exportCsv") {
         None | Some(Value::Null) => None,
         Some(Value::String(path)) => Some(path.clone()),
@@ -217,6 +291,28 @@ fn run_boq(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
 
+    let mut implied_loops = Vec::new();
+    let include_implied = match p.get("includeImpliedLoops") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(v)) => *v,
+        Some(_) => return Err(bad("boq", "`includeImpliedLoops` must be a boolean")),
+    };
+    if include_implied {
+        for sp in &spaces {
+            // No pagination loss; work remains bounded by LOOPS' default pair cap.
+            let report = super::inquiry::loops::analyze(d, sp, &json!({"limit": usize::MAX}))?;
+            if report["capped"] == true || report["truncated"] == true {
+                return Err(bad("boq", format!("implied-loop analysis incomplete in {sp:?}: endpoint pair cap exceeded; retry with includeImpliedLoops=false")));
+            }
+            implied_loops.extend(add_implied_loop_areas(d, &report, &mut totals)?);
+        }
+    }
+    for (layer, t) in &totals {
+        if !t.length.is_finite() || t.length < 0.0 || !t.area.is_finite() || t.area < 0.0 {
+            return Err(bad("boq", format!("non-finite or negative quantities on layer {layer}")));
+        }
+    }
+
     let layers: BTreeMap<String, Value> = totals
         .iter()
         .map(|(layer, t)| {
@@ -240,8 +336,17 @@ fn run_boq(s: &mut Session, p: &Value) -> Result<Value> {
             lines.push(format!("  {layer}: {}", parts.join(", ")));
         }
     }
+    if !implied_loops.is_empty() {
+        lines.push(format!("{} implied closed loop(s) from loose LINE/ARC chains contributed area", implied_loops.len()));
+    }
 
-    let mut result = json!({ "layers": layers, "entityCount": entity_count });
+    let mut result = json!({
+        "layers": layers,
+        "entityCount": entity_count,
+        "impliedLoopCount": implied_loops.len(),
+        "impliedLoops": implied_loops,
+        "impliedLoopLimitations": "Opt-in gross XY-projected areas; no hole/overlap subtraction or duplicate-geometry deduplication; branches unresolved; mixed-layer loops use first member's layer; independent closed entities remain separate quantities.",
+    });
 
     if let Some(rates) = &rates {
         let mut cost_by_layer: BTreeMap<String, f64> = BTreeMap::new();
@@ -251,6 +356,9 @@ fn run_boq(s: &mut Session, p: &Value) -> Result<Value> {
                 let cost = r.cost(t);
                 cost_by_layer.insert(layer.clone(), cost);
                 total_cost += cost;
+                if !cost.is_finite() || !total_cost.is_finite() {
+                    return Err(bad("boq", "cost overflow; use smaller rates or drawing quantities"));
+                }
             }
         }
         if let Some(o) = result.as_object_mut() {
@@ -282,6 +390,82 @@ fn run_boq(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn triangle(s: &mut Session, x: f64, size: f64) {
+        s.execute("line", &json!({"points": [[x, 0], [x + size, 0], [x, size], [x, 0]]})).unwrap();
+    }
+
+    #[test]
+    fn boq_implied_areas_follow_scope_and_are_opt_in() {
+        let mut s = Session::new();
+        triangle(&mut s, 0.0, 2.0);
+        s.execute("layout.set", &json!({"name": "Layout1"})).unwrap();
+        triangle(&mut s, 10.0, 4.0);
+        for (scope, area, count) in [("model", 2.0, 1), ("Layout1", 8.0, 1), ("current", 8.0, 1), ("all", 10.0, 2)] {
+            let r = s.execute("boq", &json!({"space": scope, "includeImpliedLoops": true})).unwrap();
+            assert_eq!(r["impliedLoopCount"], count, "{r}");
+            assert!((r["layers"]["0"]["areaTotal"].as_f64().unwrap() - area).abs() < 1e-8, "{r}");
+            assert_eq!(s.space(), Space::Paper("Layout1".into()));
+        }
+        let r = s.execute("boq", &json!({})).unwrap();
+        assert_eq!(r["impliedLoopCount"], 0);
+        assert_eq!(r["layers"]["0"]["areaTotal"], 0.0);
+        assert!(s.execute("boq", &json!({"includeImpliedLoops": "yes"})).is_err());
+    }
+
+    #[test]
+    fn boq_implied_arc_area_and_closed_polyline_are_each_counted_once() {
+        let mut s = Session::new();
+        s.execute("arc", &json!({"center": [0, 0], "radius": 2, "start": 0, "end": 180})).unwrap();
+        s.execute("line", &json!({"points": [[-2, 0], [2, 0]]})).unwrap();
+        s.execute("pline", &json!({"points": [[10, 0], [12, 0], [10, 2]], "closed": true})).unwrap();
+        let r = s.execute("boq", &json!({"includeImpliedLoops": true})).unwrap();
+        assert_eq!(r["impliedLoopCount"], 1, "{r}");
+        let area = r["layers"]["0"]["areaTotal"].as_f64().unwrap();
+        assert!((area - (2.0 * cadcraft_geom::PI + 2.0)).abs() < 1e-8, "{r}");
+    }
+
+    #[test]
+    fn boq_implied_areas_do_not_stop_at_default_page_limit() {
+        let mut s = Session::new();
+        for i in 0..201 { triangle(&mut s, f64::from(i) * 3.0, 1.0); }
+        let r = s.execute("boq", &json!({"includeImpliedLoops": true})).unwrap();
+        assert_eq!(r["impliedLoopCount"], 201);
+        assert_eq!(r["layers"]["0"]["areaTotal"], 100.5);
+    }
+
+    #[test]
+    fn boq_implied_cap_is_an_error_not_a_partial_estimate() {
+        let mut s = Session::new();
+        for i in 0..237 { triangle(&mut s, f64::from(i) * 3.0, 1.0); }
+        let e = s.execute("boq", &json!({"includeImpliedLoops": true})).unwrap_err().to_string();
+        assert!(e.contains("cap"), "{e}");
+        assert!(s.execute("boq", &json!({})).is_ok());
+    }
+
+    #[test]
+    fn boq_rejects_cost_overflow() {
+        let mut s = Session::new();
+        s.execute("line", &json!({"points": [[0, 0], [10, 0]]})).unwrap();
+        assert!(s.execute("boq", &json!({"rates": {"default": {"ratePerLength": 1e308}}})).is_err());
+    }
+
+    #[test]
+    fn boq_ratesfile_rejects_invalid_tables_and_oversized_files() {
+        let mut s = Session::new();
+        let dir = std::env::temp_dir().join(format!("cadcraft-boq-invalid-tables-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rates.json");
+        for text in ["[]", "{\"default\":{\"ratePerArea\":-1}}", "{\"default\":{\"ratePerArea\":1e999}}"] {
+            std::fs::write(&path, text).unwrap();
+            assert!(s.execute("boq", &json!({"ratesFile": path})).is_err());
+        }
+        std::fs::write(&path, vec![b' '; 1_048_577]).unwrap();
+        assert!(s.execute("boq", &json!({"ratesFile": path})).unwrap_err().to_string().contains("1 MiB"));
+        // Inline tables do not read the (invalid) file.
+        assert!(s.execute("boq", &json!({"ratesFile": path, "rates": {}})).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn boq_reports_quantities_without_rates() {
@@ -326,6 +510,14 @@ mod tests {
     }
 
     #[test]
+    fn boq_rejects_negative_rates() {
+        let mut s = Session::new();
+        for entry in [json!({"ratePerLength": -1}), json!({"ratePerArea": -1}), json!({"ratePerBlock": -1}), json!({"blockRates": {"Door": -1}})] {
+            assert!(s.execute("boq", &json!({"rates": {"default": entry}})).is_err());
+        }
+    }
+
+    #[test]
     fn boq_rejects_malformed_rates() {
         let mut s = Session::new();
         let e = s.execute("boq", &json!({ "rates": { "0": "not an object" } })).unwrap_err().to_string();
@@ -348,6 +540,95 @@ mod tests {
         assert_eq!(lines.next(), Some("layer,lengthTotal,areaTotal,blockCounts,cost"));
         let row = lines.next().unwrap();
         assert!(row.starts_with("0,0,"), "{row}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Four separate LINEs forming a closed 10x10 square (no LwPolyline) should be detected as an
+    /// implied loop: its area counts once on layer "0", and each LINE still contributes its own
+    /// length to `lengthTotal` as usual.
+    #[test]
+    fn boq_detects_implied_loop_from_loose_lines_and_adds_its_area_once() {
+        let mut s = Session::new();
+        s.cmdline("line 0,0 10,0").unwrap();
+        s.cmdline("").unwrap();
+        s.cmdline("line 10,0 10,10").unwrap();
+        s.cmdline("").unwrap();
+        s.cmdline("line 10,10 0,10").unwrap();
+        s.cmdline("").unwrap();
+        s.cmdline("line 0,10 0,0").unwrap();
+        s.cmdline("").unwrap();
+
+        let r = s.execute("boq", &json!({"includeImpliedLoops": true})).unwrap();
+        assert_eq!(r["impliedLoopCount"], 1, "{r}");
+        let implied = r["impliedLoops"][0].clone();
+        assert_eq!(implied["layer"], "0");
+        assert!((implied["area"].as_f64().unwrap() - 100.0).abs() < 1e-6);
+        assert_eq!(implied["members"].as_array().unwrap().len(), 4);
+
+        let layer = "0";
+        let area = r["layers"][layer]["areaTotal"].as_f64().unwrap();
+        assert!((area - 100.0).abs() < 1e-6, "loop area should land on layer 0 exactly once: {area}");
+
+        let length = r["layers"][layer]["lengthTotal"].as_f64().unwrap();
+        assert!((length - 40.0).abs() < 1e-6, "all four 10-unit sides still sum their own length: {length}");
+        assert_eq!(r["entityCount"], 4);
+    }
+
+    #[test]
+    fn boq_ratesfile_loads_rates_from_disk() {
+        let mut s = Session::new();
+        s.cmdline("line 0,0 100,0").unwrap();
+        s.cmdline("").unwrap();
+
+        let dir = std::env::temp_dir().join(format!("cadcraft-boq-ratesfile-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rates.json");
+        std::fs::write(&path, r#"{"0": {"ratePerLength": 3.0}}"#).unwrap();
+
+        let r = s.execute("boq", &json!({ "ratesFile": path.to_string_lossy() })).unwrap();
+        let length = r["layers"]["0"]["lengthTotal"].as_f64().unwrap();
+        let expected = length * 3.0;
+        let got = r["costByLayer"]["0"].as_f64().unwrap();
+        assert!((got - expected).abs() < 1e-9, "{got} vs {expected}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn boq_rates_inline_wins_over_ratesfile() {
+        let mut s = Session::new();
+        s.cmdline("line 0,0 100,0").unwrap();
+        s.cmdline("").unwrap();
+
+        let dir = std::env::temp_dir().join(format!("cadcraft-boq-ratesfile-precedence-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rates.json");
+        std::fs::write(&path, r#"{"0": {"ratePerLength": 999.0}}"#).unwrap();
+
+        let r = s.execute("boq", &json!({ "ratesFile": path.to_string_lossy(), "rates": { "0": { "ratePerLength": 1.0 } } })).unwrap();
+        let length = r["layers"]["0"]["lengthTotal"].as_f64().unwrap();
+        let got = r["costByLayer"]["0"].as_f64().unwrap();
+        assert!((got - length).abs() < 1e-9, "inline `rates` should win over `ratesFile`: {got} vs {length}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn boq_ratesfile_missing_file_is_a_bad_params_error_not_a_panic() {
+        let mut s = Session::new();
+        let path = std::env::temp_dir().join("cadcraft-boq-ratesfile-does-not-exist.json");
+        std::fs::remove_file(&path).ok();
+        let e = s.execute("boq", &json!({ "ratesFile": path.to_string_lossy() })).unwrap_err().to_string();
+        assert!(e.contains("ratesFile"), "{e}");
+    }
+
+    #[test]
+    fn boq_ratesfile_malformed_json_is_a_bad_params_error_not_a_panic() {
+        let mut s = Session::new();
+        let dir = std::env::temp_dir().join(format!("cadcraft-boq-ratesfile-malformed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rates.json");
+        std::fs::write(&path, "{ not valid json").unwrap();
+        let e = s.execute("boq", &json!({ "ratesFile": path.to_string_lossy() })).unwrap_err().to_string();
+        assert!(e.contains("ratesFile"), "{e}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

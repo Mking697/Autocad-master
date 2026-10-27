@@ -5,6 +5,7 @@
 //! `groups`, saved as GROUP objects in the ACAD_GROUP dictionary. The JSON forms never prompt;
 //! typed, the commands ask as AutoCAD's command-line versions do.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use cadcraft_doc::{Drawing, Group, Handle};
@@ -95,6 +96,50 @@ pub(crate) fn create(s: &mut Session, name: Option<&str>, description: &str, hs:
     };
     s.doc_mut()?.groups.push(Group { name: name.clone(), description: description.to_string(), selectable, members });
     Ok(name)
+}
+
+/// After a copy-producing command (COPY, and anything else that duplicates a selection and
+/// knows the resulting old-handle→new-handle `pairs`), make a new group for each source group
+/// whose full membership was present in the original selection `original`, when `original` as a
+/// whole was exactly the union of one or more complete groups (no extra, ungrouped handles left
+/// over). A selection spanning two whole groups makes two new groups, one per source group. A
+/// partial match (some but not all of a group's members), or a complete group plus unrelated
+/// loose entities, makes no group at all. This is the implemented COPY policy, not a claim of
+/// verified reference-application parity. Other copy-producing commands do not call this yet.
+/// Silent and a no-op on an empty selection, no matching groups, or a doc-access error.
+pub(crate) fn clone_groups_for_copy(s: &mut Session, original: &[Handle], pairs: &[(Handle, Handle)]) -> Result<()> {
+    if original.is_empty() || pairs.is_empty() {
+        return Ok(());
+    }
+    let orig_set: HashSet<Handle> = original.iter().copied().collect();
+    let map: HashMap<Handle, Handle> = pairs.iter().copied().collect();
+    let to_clone: Vec<Group> = {
+        let Ok(d) = s.doc() else { return Ok(()) };
+        if d.groups.is_empty() {
+            return Ok(());
+        }
+        let mut covering: Vec<&Group> = Vec::new();
+        let mut covered: HashSet<Handle> = HashSet::new();
+        for g in &d.groups {
+            let members: HashSet<Handle> = g.members.iter().copied().filter(|h| d.entity(*h).is_some()).collect();
+            if !members.is_empty() && members.is_subset(&orig_set) {
+                covering.push(g);
+                covered.extend(members.iter().copied());
+            }
+        }
+        if covering.is_empty() || covered != orig_set {
+            return Ok(());
+        }
+        covering.into_iter().cloned().collect()
+    };
+    for g in to_clone {
+        let new_members: Vec<Handle> = g.members.iter().filter_map(|h| map.get(h).copied()).collect();
+        if new_members.is_empty() {
+            continue;
+        }
+        create(s, None, &g.description, &new_members, g.selectable)?;
+    }
+    Ok(())
 }
 
 /// Remove the groups at `idx`; their objects stay. Returns the names removed.
@@ -614,5 +659,120 @@ impl Interactive for GroupEditM {
             },
         }
         Ok(Step::Continue)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session() -> Session {
+        let mut s = Session::new();
+        s.execute("line", &json!({ "points": [[0, 0], [10, 0]] })).unwrap();
+        s.execute("line", &json!({ "points": [[0, 0], [3, 4]] })).unwrap();
+        s.execute("circle", &json!({ "center": [5, 5], "radius": 2 })).unwrap();
+        s.set_selection(Vec::new());
+        s
+    }
+
+    /// Every handle currently in the model space, oldest first.
+    fn model_handles(s: &Session) -> Vec<Handle> {
+        s.doc().unwrap().model.iter().map(|e| e.handle).collect()
+    }
+
+    #[test]
+    fn copying_a_whole_group_makes_a_new_group() {
+        let mut s = session();
+        let hs = model_handles(&s);
+        create(&mut s, Some("G1"), "", &hs[..2], true).unwrap();
+        s.execute("copy", &json!({ "handles": [hs[0].hex(), hs[1].hex()], "delta": [1, 1] })).unwrap();
+        assert_eq!(s.doc().unwrap().groups.len(), 2, "the copy should have made a second group");
+        let g0 = &s.doc().unwrap().groups[0];
+        assert_eq!(g0.name, "G1");
+        assert_eq!(g0.members, hs[..2]);
+        let g1 = &s.doc().unwrap().groups[1];
+        assert!(g1.name.starts_with('*'), "the cloned group is auto-named like GROUP's own unnamed groups");
+        assert_eq!(g1.members.len(), 2);
+        assert!(g1.members.iter().all(|h| !hs.contains(h)), "the new group holds the copies, not the originals");
+        assert!(g1.selectable);
+    }
+
+    #[test]
+    fn copying_part_of_a_group_makes_no_group() {
+        let mut s = session();
+        let hs = model_handles(&s);
+        create(&mut s, Some("G1"), "", &hs, true).unwrap(); // group of all 3
+        // Copy only 2 of the 3 members: not a full-group copy.
+        s.execute("copy", &json!({ "handles": [hs[0].hex(), hs[1].hex()], "delta": [1, 1] })).unwrap();
+        assert_eq!(s.doc().unwrap().groups.len(), 1, "a partial copy must not create a new group");
+    }
+
+    #[test]
+    fn copying_a_group_plus_extra_entities_makes_no_group() {
+        let mut s = session();
+        let hs = model_handles(&s);
+        create(&mut s, Some("G1"), "", &hs[..2], true).unwrap(); // group of the first 2
+        // Selection is the whole group plus one unrelated, ungrouped entity.
+        s.execute("copy", &json!({ "handles": [hs[0].hex(), hs[1].hex(), hs[2].hex()], "delta": [1, 1] })).unwrap();
+        assert_eq!(s.doc().unwrap().groups.len(), 1, "extra, ungrouped objects in the selection stop group cloning");
+    }
+
+    #[test]
+    fn copying_two_whole_groups_makes_two_new_groups() {
+        let mut s = session();
+        let hs = model_handles(&s);
+        create(&mut s, Some("GA"), "", &hs[..1], true).unwrap();
+        create(&mut s, Some("GB"), "", &hs[1..3], true).unwrap();
+        s.execute("copy", &json!({ "handles": hs.iter().map(|h| h.hex()).collect::<Vec<_>>(), "delta": [2, 2] })).unwrap();
+        assert_eq!(s.doc().unwrap().groups.len(), 4, "two source groups fully copied should yield two new groups");
+        let unnamed: Vec<&Group> = s.doc().unwrap().groups.iter().filter(|g| g.name.starts_with('*')).collect();
+        assert_eq!(unnamed.len(), 2);
+        assert_eq!(unnamed[0].members.len(), 1);
+        assert_eq!(unnamed[1].members.len(), 2);
+    }
+
+    #[test]
+    fn copying_group_multiple_times_preserves_metadata_and_undo_redo() {
+        let mut s = session();
+        let hs = model_handles(&s);
+        // Reserve the first unnamed name so COPY must allocate fresh names.
+        create(&mut s, None, "reserved", &hs[2..], true).unwrap();
+        create(&mut s, Some("Source"), "source description", &hs[..2], false).unwrap();
+        let before = s.doc().unwrap().groups.clone();
+        let result = s.execute("copy", &json!({
+            "handles": [hs[0].hex(), hs[1].hex()], "delta": [2, 3], "count": 2
+        })).unwrap();
+        let copied = result["handles"].as_array().unwrap().iter()
+            .map(|h| Handle::parse_hex(h.as_str().unwrap()).unwrap()).collect::<Vec<_>>();
+        assert_eq!(copied.len(), 4);
+        let after = s.doc().unwrap().groups.clone();
+        assert_eq!(after.len(), 4);
+        assert_eq!(after[0], before[0]);
+        assert_eq!(after[1], before[1]);
+        for (i, group) in after[2..].iter().enumerate() {
+            assert_eq!(group.members, copied[i * 2..i * 2 + 2]);
+            assert_eq!(group.description, "source description");
+            assert!(!group.selectable);
+            assert!(group.members.iter().all(|h| s.doc().unwrap().entity(*h).is_some()));
+        }
+        let names: HashSet<_> = after.iter().map(|g| &g.name).collect();
+        assert_eq!(names.len(), after.len(), "every copied group needs a fresh name");
+        s.execute("undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().groups, before);
+        assert_eq!(model_handles(&s), hs);
+        s.execute("redo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().groups, after);
+        assert!(copied.iter().all(|h| s.doc().unwrap().entity(*h).is_some()));
+        assert_eq!(model_handles(&s).len(), 7);
+    }
+
+    #[test]
+    fn copying_unrelated_entities_does_not_touch_other_groups() {
+        let mut s = session();
+        let hs = model_handles(&s);
+        create(&mut s, Some("G1"), "", &hs[..2], true).unwrap();
+        // Copy the entity that isn't in any group: no group work at all, no panic.
+        s.execute("copy", &json!({ "handles": [hs[2].hex()], "delta": [1, 0] })).unwrap();
+        assert_eq!(s.doc().unwrap().groups.len(), 1);
     }
 }
