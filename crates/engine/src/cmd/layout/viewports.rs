@@ -114,6 +114,31 @@ fn viewport_of_boundary(d: &Drawing, space: &Space, h: Handle) -> Option<Handle>
     d.space(space)?.iter().find(|e| matches!(&e.kind, EntityKind::Viewport(v) if v.clip == Some(h))).map(|e| e.handle)
 }
 
+/// The paired handle (a clipped viewport's boundary, or a boundary's viewport) for each of `hs`
+/// that is missing its partner, so MOVE/COPY/SCALE/STRETCH can move a clipped viewport and its
+/// clip boundary as one object (AutoCAD's VPCLIP boundary travels with its viewport). A handle
+/// already present in `hs` is never returned again, so callers that add the result to `hs` and
+/// then transform each handle once never apply the transform twice to either entity, whether the
+/// user selected one of the pair, both, or neither explicitly.
+pub(crate) fn clip_partners(d: &Drawing, hs: &[Handle]) -> Vec<Handle> {
+    let mut out = Vec::new();
+    for h in hs {
+        let Some(sp) = d.space_of(*h) else { continue };
+        let partner = match d.space(&sp).and_then(|st| st.get(*h)).map(|e| &e.kind) {
+            Some(EntityKind::Viewport(v)) => v.clip,
+            Some(_) => viewport_of_boundary(d, &sp, *h),
+            None => None,
+        };
+        if let Some(p) = partner
+            && !hs.contains(&p)
+            && !out.contains(&p)
+        {
+            out.push(p);
+        }
+    }
+    out
+}
+
 /// Add a closed polyline (a polygonal viewport's boundary) to `space`.
 fn add_boundary(s: &mut Session, space: &Space, vs: Vec<PolyVertex>) -> Result<Handle> {
     let common = s.current_common();
@@ -1007,5 +1032,101 @@ mod tests {
         // An unknown configuration name reports a clear error rather than panicking.
         let err = s.execute("mview", &json!({ "option": "restore", "name": "No Such Config" })).unwrap_err();
         assert!(err.to_string().contains("Could not find viewport configuration"));
+    }
+
+    /// A new clipped viewport (MVIEW Polygonal) and its boundary, both in "Layout1": returns
+    /// their handles.
+    fn clipped_viewport(s: &mut Session) -> (Handle, Handle) {
+        let r = s
+            .execute("mview", &json!({ "option": "polygonal", "layout": "Layout1", "points": [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]] }))
+            .unwrap();
+        (Handle::parse_hex(r["viewport"].as_str().unwrap()).unwrap(), Handle::parse_hex(r["boundary"].as_str().unwrap()).unwrap())
+    }
+
+    fn entity_kind(s: &Session, h: Handle) -> EntityKind {
+        s.doc().unwrap().entity(h).unwrap().kind.clone()
+    }
+
+    fn viewport_of(s: &Session, h: Handle) -> Viewport {
+        match entity_kind(s, h) {
+            EntityKind::Viewport(v) => v,
+            k => panic!("not a viewport: {k:?}"),
+        }
+    }
+
+    fn boundary_bounds_of(s: &Session, h: Handle) -> Bounds2 {
+        boundary_bounds(&entity_kind(s, h)).expect("a usable clip boundary")
+    }
+
+    /// F15: a clipped viewport and its clip boundary are a coupled pair — MOVE of the viewport
+    /// moves the boundary along with it.
+    #[test]
+    fn move_viewport_moves_its_clip_boundary() {
+        let mut s = Session::new();
+        let (vp, boundary) = clipped_viewport(&mut s);
+        let before = boundary_bounds_of(&s, boundary);
+
+        s.execute("move", &json!({ "handles": [vp.hex()], "delta": [3.0, 4.0] })).unwrap();
+
+        let after = boundary_bounds_of(&s, boundary);
+        assert!((after.min.x - before.min.x - 3.0).abs() < 1e-9, "boundary followed the viewport in x");
+        assert!((after.min.y - before.min.y - 4.0).abs() < 1e-9, "boundary followed the viewport in y");
+        let vpk = viewport_of(&s, vp);
+        assert!((vpk.center.x - 8.0).abs() < 1e-6 && (vpk.center.y - 6.5).abs() < 1e-6, "the viewport itself moved too");
+    }
+
+    /// F15: moving just the clip boundary moves its viewport (the coupling works either way).
+    #[test]
+    fn move_clip_boundary_moves_its_viewport() {
+        let mut s = Session::new();
+        let (vp, boundary) = clipped_viewport(&mut s);
+        let before = viewport_of(&s, vp);
+
+        s.execute("move", &json!({ "handles": [boundary.hex()], "delta": [-2.0, 1.5] })).unwrap();
+
+        let after = viewport_of(&s, vp);
+        assert!((after.center.x - before.center.x + 2.0).abs() < 1e-9, "viewport followed the boundary in x");
+        assert!((after.center.y - before.center.y - 1.5).abs() < 1e-9, "viewport followed the boundary in y");
+        assert_eq!(after.clip, Some(boundary), "still the same clip pair");
+    }
+
+    /// F15: SCALE of one of the pair scales both proportionally from the same base point.
+    #[test]
+    fn scale_scales_viewport_and_boundary_together() {
+        let mut s = Session::new();
+        let (vp, boundary) = clipped_viewport(&mut s);
+        let base = Vec2::new(0.0, 0.0);
+        let before_vp = viewport_of(&s, vp);
+        let before_b = boundary_bounds_of(&s, boundary);
+
+        s.execute("scale", &json!({ "handles": [vp.hex()], "base": [base.x, base.y], "factor": 2.0 })).unwrap();
+
+        let after_vp = viewport_of(&s, vp);
+        let after_b = boundary_bounds_of(&s, boundary);
+        assert!((after_vp.width - before_vp.width * 2.0).abs() < 1e-6, "the viewport scaled");
+        assert!((after_vp.height - before_vp.height * 2.0).abs() < 1e-6, "the viewport scaled");
+        assert!((after_vp.center.x - before_vp.center.x * 2.0).abs() < 1e-6, "the viewport scaled from the base point");
+        assert!((after_b.width() - before_b.width() * 2.0).abs() < 1e-6, "the boundary scaled by the same factor");
+        assert!((after_b.height() - before_b.height() * 2.0).abs() < 1e-6, "the boundary scaled by the same factor");
+        assert!((after_b.min.x - before_b.min.x * 2.0).abs() < 1e-6, "the boundary scaled from the same base point");
+    }
+
+    /// F15: selecting BOTH the viewport and its boundary explicitly still transforms each exactly
+    /// once (the automatic coupling must not double the displacement).
+    #[test]
+    fn selecting_both_explicitly_does_not_double_apply() {
+        let mut s = Session::new();
+        let (vp, boundary) = clipped_viewport(&mut s);
+        let before_vp = viewport_of(&s, vp);
+        let before_b = boundary_bounds_of(&s, boundary);
+
+        s.execute("move", &json!({ "handles": [vp.hex(), boundary.hex()], "delta": [5.0, -2.0] })).unwrap();
+
+        let after_vp = viewport_of(&s, vp);
+        let after_b = boundary_bounds_of(&s, boundary);
+        assert!((after_vp.center.x - before_vp.center.x - 5.0).abs() < 1e-9, "the viewport moved by exactly one delta");
+        assert!((after_vp.center.y - before_vp.center.y + 2.0).abs() < 1e-9, "the viewport moved by exactly one delta");
+        assert!((after_b.min.x - before_b.min.x - 5.0).abs() < 1e-9, "the boundary moved by exactly one delta");
+        assert!((after_b.min.y - before_b.min.y + 2.0).abs() < 1e-9, "the boundary moved by exactly one delta");
     }
 }

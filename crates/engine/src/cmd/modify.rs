@@ -135,6 +135,17 @@ pub(crate) fn transform_entities_mapped(s: &mut Session, hs: &[Handle], m: &Mat3
     Ok(out)
 }
 
+/// `hs` with [`layout::viewports::clip_partners`] appended: a clipped viewport and its clip
+/// boundary move, copy, scale and stretch as one object, whether the user selected one of the
+/// pair, both, or neither (the partner comes along automatically). Each handle still appears at
+/// most once, so a later per-handle transform loop never applies the transform twice to either
+/// entity.
+fn couple_clip_pairs(s: &Session, mut hs: Vec<Handle>) -> Result<Vec<Handle>> {
+    let extra = super::layout::viewports::clip_partners(s.doc()?, &hs);
+    hs.extend(extra);
+    Ok(hs)
+}
+
 fn erase(s: &mut Session, hs: &[Handle]) -> Result<usize> {
     let d = s.doc_mut()?;
     let mut n = 0;
@@ -164,14 +175,14 @@ fn delta_of(cmd: &str, p: &Value) -> Result<Vec2> {
 }
 
 fn run_move(s: &mut Session, p: &Value) -> Result<Value> {
-    let hs = targets(s, p)?;
+    let hs = couple_clip_pairs(s, targets(s, p)?)?;
     let d = delta_of("move", p)?;
     let moved = transform_entities(s, &hs, &Mat3::translate(d), false)?;
     Ok(json!({ "moved": moved.len() }))
 }
 
 fn run_copy(s: &mut Session, p: &Value) -> Result<Value> {
-    let hs = targets(s, p)?;
+    let hs = couple_clip_pairs(s, targets(s, p)?)?;
     let d = delta_of("copy", p)?;
     let n = p.get("count").and_then(Value::as_u64).unwrap_or(1).clamp(1, 10_000);
     let mut out = Vec::new();
@@ -192,7 +203,7 @@ fn run_rotate(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn run_scale(s: &mut Session, p: &Value) -> Result<Value> {
-    let hs = targets(s, p)?;
+    let hs = couple_clip_pairs(s, targets(s, p)?)?;
     let base = point_req("scale", p, "base")?;
     let f = f64_req("scale", p, "factor")?;
     if f <= 0.0 {
@@ -304,7 +315,7 @@ fn run_stretch(s: &mut Session, p: &Value) -> Result<Value> {
     };
     // A fence marks no area: the objects it crosses move whole.
     if let Some(fence) = listed("fence", 2)? {
-        let hs = crate::select::select_fence(s.doc()?, &space, &fence);
+        let hs = couple_clip_pairs(s, crate::select::select_fence(s.doc()?, &space, &fence))?;
         let moved = transform_entities(s, &hs, &Mat3::translate(d), false)?;
         return Ok(json!({ "stretched": moved.len() }));
     }
@@ -318,12 +329,18 @@ fn run_stretch(s: &mut Session, p: &Value) -> Result<Value> {
     };
     add_mline_vertex_hits(s.doc()?, &space, &area, &mut hs);
     hs.retain(|h| !super::curves::is_locked(s, *h));
+    // A clipped viewport and its clip boundary move together whole, even when only one of the
+    // pair has a vertex inside the stretch area.
+    let whole = super::layout::viewports::clip_partners(s.doc()?, &hs);
     let doc = s.doc_mut()?;
     let areas = [area];
     for h in &hs {
         doc.modify_entity(*h, |e| stretch_entity(e, &areas, d))?;
     }
-    Ok(json!({ "stretched": hs.len() }))
+    for h in &whole {
+        doc.modify_entity(*h, |e| e.kind.transform(&Mat3::translate(d)))?;
+    }
+    Ok(json!({ "stretched": hs.len() + whole.len() }))
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -501,10 +518,18 @@ impl StretchM {
     }
 
     fn apply(&self, s: &mut Session, d: Vec2) -> Result<Step> {
-        let whole: Vec<Handle> = self.objs.iter().filter(|h| self.whole.contains(h)).copied().collect();
+        let mut whole: Vec<Handle> = self.objs.iter().filter(|h| self.whole.contains(h)).copied().collect();
+        // A clipped viewport and its clip boundary move together whole, even when only one of
+        // the pair was picked (or only one has a vertex inside a stretch window/polygon).
+        let partners = s.doc().map(|d| super::layout::viewports::clip_partners(d, &self.objs)).unwrap_or_default();
+        for h in partners.iter().copied() {
+            if !whole.contains(&h) {
+                whole.push(h);
+            }
+        }
         transform_entities(s, &whole, &Mat3::translate(d), false)?;
         let doc = s.doc_mut()?;
-        for h in self.objs.iter().filter(|h| !self.whole.contains(h)) {
+        for h in self.objs.iter().filter(|h| !self.whole.contains(h) && !partners.contains(h)) {
             let locked = doc.entity(*h).and_then(|e| doc.layer(&e.common.layer)).is_some_and(|l| l.locked);
             if !locked {
                 doc.modify_entity(*h, |e| stretch_entity(e, &self.windows, d))?;
