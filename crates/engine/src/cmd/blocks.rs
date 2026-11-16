@@ -6,7 +6,7 @@ pub(in crate::cmd) mod purge;
 
 use std::sync::Arc;
 
-use cadcraft_doc::{Attrib, Block, Entity, EntityKind, HAlign, Handle, Insert, Text, VAlign};
+use cadcraft_doc::{Attrib, AttribModes, Block, Entity, EntityKind, HAlign, Handle, Insert, Text, VAlign};
 use cadcraft_geom::{Mat3, Vec2, Vec3};
 use serde_json::{Value, json};
 
@@ -43,7 +43,9 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("attdef", "Define Attributes...", run_attdef)
             .menu(&["Draw", "Block", "Define Attributes..."])
             .alias(&["att", "-attdef"])
-            .params("{tag, prompt?, default?, at, height?, invisible?}")
+            .params(
+                "{tag, prompt?, default?, at, height?, invisible?, constant?, verify? (ask twice at insertion), preset? (use the default, never ask), lockPosition?}",
+            )
             .interactive(|_| Ok(Box::new(AttdefM::default()))),
         attedit::attedit_spec(),
         attedit::dash_attedit_spec(),
@@ -307,7 +309,18 @@ fn run_insert(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(attedit::with_unknown_tags(s, h, &vals, json!({ "handle": h.hex() })))
 }
 
-fn attdef_kind(s: &Session, tag: &str, prompt: &str, default: &str, at: Vec2, height: f64, invisible: bool) -> EntityKind {
+#[allow(clippy::too_many_arguments)]
+fn attdef_kind(
+    s: &Session,
+    tag: &str,
+    prompt: &str,
+    default: &str,
+    at: Vec2,
+    height: f64,
+    invisible: bool,
+    constant: bool,
+    modes: AttribModes,
+) -> EntityKind {
     let style = s.doc().map(|d| d.header.str("TEXTSTYLE", "Standard")).unwrap_or_else(|_| "Standard".into());
     EntityKind::AttDef(Attrib {
         tag: tag.to_ascii_uppercase(),
@@ -324,12 +337,18 @@ fn attdef_kind(s: &Session, tag: &str, prompt: &str, default: &str, at: Vec2, he
             valign: VAlign::Baseline,
         },
         invisible,
-        constant: false,
+        constant,
         prompt: prompt.into(),
         props: Default::default(),
         multiline: None,
-        modes: Default::default(),
+        modes,
     })
+}
+
+/// Verify, Preset and Lock position from JSON params, named as in AutoCAD's -ATTDEF prompt
+/// ("Verify"/"Preset"/"Lock position"), alongside the already-accepted `invisible`.
+fn attrib_modes_param(p: &Value) -> AttribModes {
+    AttribModes { verify: bool_or(p, "verify", false), preset: bool_or(p, "preset", false), lock_position: bool_or(p, "lockPosition", false) }
 }
 
 fn run_attdef(s: &mut Session, p: &Value) -> Result<Value> {
@@ -339,7 +358,17 @@ fn run_attdef(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let at = point_req("attdef", p, "at")?;
     let h = f64_or(p, "height", s.doc()?.header.f64("TEXTSIZE", 0.2));
-    let k = attdef_kind(s, tag, str_param(p, "prompt").unwrap_or(tag), str_param(p, "default").unwrap_or(""), at, h, bool_or(p, "invisible", false));
+    let k = attdef_kind(
+        s,
+        tag,
+        str_param(p, "prompt").unwrap_or(tag),
+        str_param(p, "default").unwrap_or(""),
+        at,
+        h,
+        bool_or(p, "invisible", false),
+        bool_or(p, "constant", false),
+        attrib_modes_param(p),
+    );
     Ok(json!({ "handle": s.add_entity(k)?.hex() }))
 }
 
@@ -584,8 +613,10 @@ struct InsertM {
     x_scale: Option<f64>,
     scale: Option<Vec2>,
     rotation: Option<f64>,
-    attdefs: Vec<(String, String, String)>,
+    attdefs: Vec<(String, String, String, bool)>,
     values: serde_json::Map<String, Value>,
+    /// A just-entered value waiting for its Verify re-prompt: (tag, value).
+    verify_pending: Option<(String, String)>,
     /// `*name`: insert the block's objects (one uniform scale factor, no attribute values).
     explode: bool,
     /// The file waiting for the Redefine answer.
@@ -628,7 +659,9 @@ impl InsertM {
                 .iter()
                 .filter_map(|e| {
                     if let EntityKind::AttDef(a) = &e.kind {
-                        (!a.constant).then(|| (a.tag.clone(), a.prompt.clone(), a.text.value.clone()))
+                        // Constant and Preset attributes are never asked for: Constant always
+                        // takes the definition's value, Preset the default without prompting.
+                        (!a.constant && !a.modes.preset).then(|| (a.tag.clone(), a.prompt.clone(), a.text.value.clone(), a.modes.verify))
                     } else {
                         None
                     }
@@ -693,7 +726,10 @@ impl Interactive for InsertM {
             InsStage::YScale => Prompt::new("Enter Y scale factor", Accept::NUMBER).default("use X scale factor"),
             InsStage::Rotation => Prompt::new("Specify rotation angle", Accept::POINT_OR_NUMBER).default("0").base(at),
             InsStage::Attribs => {
-                let (_, prompt, default) = self.attdefs.get(self.values.len()).cloned().unwrap_or_default();
+                if let Some((tag, value)) = &self.verify_pending {
+                    return Prompt::new(format!("Verify attribute values\n{tag}"), Accept::TEXT).default(value.clone());
+                }
+                let (_, prompt, default, _) = self.attdefs.get(self.values.len()).cloned().unwrap_or_default();
                 Prompt::new(if prompt.is_empty() { "Enter attribute value".into() } else { prompt }, Accept::TEXT).default(default)
             }
         }
@@ -812,11 +848,23 @@ impl Interactive for InsertM {
                 return self.advance(s);
             }
             InsStage::Attribs => {
-                let (tag, _, default) = self.attdefs.get(self.values.len()).cloned().unwrap_or_default();
+                if let Some((tag, value)) = self.verify_pending.take() {
+                    let v = match i {
+                        Input::Text(t) if !t.is_empty() => t,
+                        _ => value,
+                    };
+                    self.values.insert(tag, Value::String(v));
+                    return self.advance(s);
+                }
+                let (tag, _, default, verify) = self.attdefs.get(self.values.len()).cloned().unwrap_or_default();
                 let v = match i {
                     Input::Text(t) => t,
                     _ => default,
                 };
+                if verify {
+                    self.verify_pending = Some((tag, v));
+                    return Ok(Step::Continue);
+                }
                 self.values.insert(tag, Value::String(v));
                 return self.advance(s);
             }
@@ -841,11 +889,23 @@ impl Interactive for InsertM {
     }
 }
 
+/// -ATTDEF's attribute-modes toggle menu, shown before the tag prompt: Invisible, Constant,
+/// Verify, Preset and Lock position each flip on a matching keyword; Enter (Done) moves on.
 #[derive(Default)]
 struct AttdefM {
+    modes_done: bool,
+    invisible: bool,
+    constant: bool,
+    verify: bool,
+    preset: bool,
+    lock_position: bool,
     tag: Option<String>,
     prompt: Option<String>,
     default: Option<String>,
+}
+
+fn yn(b: bool) -> &'static str {
+    if b { "Y" } else { "N" }
 }
 
 impl Interactive for AttdefM {
@@ -853,6 +913,21 @@ impl Interactive for AttdefM {
         "ATTDEF"
     }
     fn prompt(&self, _s: &Session) -> Prompt {
+        if !self.modes_done {
+            return Prompt::new(
+                format!(
+                    "Current attribute modes: Invisible={} Constant={} Verify={} Preset={} Lock position={}\nEnter an option to change",
+                    yn(self.invisible),
+                    yn(self.constant),
+                    yn(self.verify),
+                    yn(self.preset),
+                    yn(self.lock_position)
+                ),
+                super::curves::KW,
+            )
+            .kw(&["Invisible", "Constant", "Verify", "Preset", "Lock position"])
+            .default("Done");
+        }
         match (&self.tag, &self.prompt, &self.default) {
             (None, ..) => Prompt::new("Enter attribute tag name", Accept::TEXT),
             (Some(_), None, _) => Prompt::new("Enter attribute prompt", Accept::TEXT),
@@ -861,6 +936,18 @@ impl Interactive for AttdefM {
         }
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        if !self.modes_done {
+            match &i {
+                Input::Keyword(k) if k == "Invisible" => self.invisible = !self.invisible,
+                Input::Keyword(k) if k == "Constant" => self.constant = !self.constant,
+                Input::Keyword(k) if k == "Verify" => self.verify = !self.verify,
+                Input::Keyword(k) if k == "Preset" => self.preset = !self.preset,
+                Input::Keyword(k) if k == "Lock position" => self.lock_position = !self.lock_position,
+                Input::Enter => self.modes_done = true,
+                _ => {}
+            }
+            return Ok(Step::Continue);
+        }
         let text = match &i {
             Input::Text(t) => Some(t.clone()),
             Input::Enter => Some(String::new()),
@@ -877,7 +964,8 @@ impl Interactive for AttdefM {
             (Some(tag), Some(pr), Some(def)) => {
                 if let Input::Point(p) = i {
                     let h = s.doc()?.header.f64("TEXTSIZE", 0.2);
-                    let k = attdef_kind(s, tag, pr, def, p, h, false);
+                    let modes = AttribModes { verify: self.verify, preset: self.preset, lock_position: self.lock_position };
+                    let k = attdef_kind(s, tag, pr, def, p, h, self.invisible, self.constant, modes);
                     s.add_entity(k)?;
                     return Ok(Step::Done);
                 }
