@@ -1,8 +1,9 @@
 //! COMPAREEXPORT: the comparison as a new drawing (a snapshot). The drawings are compared again
 //! when the command runs, so edits made since COMPARE count. The new drawing's model space holds
 //! copies of the other drawing's objects that differ, then copies of the current drawing's
-//! objects in the compared tab, as two groups, `COMPARE_COMPARED` and `COMPARE_CURRENT`. Objects
-//! only in this drawing or changed in it are drawn in the overlay's green, objects only in the
+//! objects in the compared tab, each set as its own block definition (`COMPARE_COMPARED` and
+//! `COMPARE_CURRENT`) inserted into model space as a single block reference, as AutoCAD does.
+//! Objects only in this drawing or changed in it are drawn in the overlay's green, objects only in the
 //! other drawing or changed there in its red, and objects in both in gray (color 8). A block
 //! reference, dimension or multileader refers to a copy of its block whose objects all have that
 //! color (`COMPARE_CURRENT_<name>`, `COMPARE_COMPARED_<name>`, `COMPARE_COMMON_<name>`; for a
@@ -20,7 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cadcraft_doc::color::{Color, Rgb};
-use cadcraft_doc::{Block, CellStyle, DimStyle, Drawing, Entity, EntityKind, EntityStore, Group, Handle, MAX_BLOCK_DEPTH, TableStyle};
+use cadcraft_doc::{Block, CellStyle, DimStyle, Drawing, Entity, EntityKind, EntityStore, Handle, Insert, MAX_BLOCK_DEPTH, TableStyle};
+use cadcraft_geom::Vec3;
 use serde_json::{Value, json};
 
 use super::super::super::{CommandSpec, bad};
@@ -43,13 +45,13 @@ const MAX_COPIED: usize = 1_000_000;
 pub(super) fn spec() -> CommandSpec {
     CommandSpec::new("compareexport", "Export Comparison", run)
         .params(
-            "{} → {index, title, current, compared: group names, counts: {current, compared}, truncated, message}: the comparison \
+            "{} → {index, title, current, compared: block names, counts: {current, compared}, truncated, message}: the comparison \
              as a new drawing, opened untitled",
         )
         .noundo()
 }
 
-/// What [`snapshot`] made: the drawing, the two group names, how many objects each holds,
+/// What [`snapshot`] made: the drawing, the two block names, how many objects each holds,
 /// whether a drawing had more objects than were compared, whether the other drawing had more
 /// blocks to copy than [`MAX_BLOCKS`], and whether a block was left in its own colors.
 struct Snapshot {
@@ -229,8 +231,8 @@ fn snapshot(cur: &Drawing, c: &Comparison, folders: &Folders) -> Snapshot {
     let (renames, blocks_left_out) = copy_blocks(&mut d, other, there.iter().map(|(e, _)| *e), folders.there.as_deref(), &mut tinted);
 
     // The other drawing's objects first, so this drawing's are drawn over them.
-    let compared = add_group(&mut d, "COMPARE_COMPARED", &there, &renames, folders.there.as_deref(), &mut tinted);
-    let current = add_group(&mut d, "COMPARE_CURRENT", &here, &Renames::new(), folders.here.as_deref(), &mut tinted);
+    let compared = add_block(&mut d, "COMPARE_COMPARED", &there, &renames, folders.there.as_deref(), &mut tinted);
+    let current = add_block(&mut d, "COMPARE_CURRENT", &here, &Renames::new(), folders.here.as_deref(), &mut tinted);
     let uncolored = tinted.uncolored;
     Snapshot { drawing: d, current, compared, counts: (here.len(), there.len()), truncated: diff.truncated, blocks_left_out, uncolored }
 }
@@ -244,11 +246,14 @@ fn merge<T: Clone>(to: &mut Vec<T>, from: &[T], name: impl Fn(&T) -> &String) {
     }
 }
 
-/// Add copies of `objs` to model space with new handles, their block references renamed by
-/// `renames` and their files rebased on `folder`, each painted in its comparison color, and
-/// group them as `name` (or `name_2`… when that group name is taken). Returns the group's name.
-fn add_group(d: &mut Drawing, name: &str, objs: &[(&Entity, Color)], renames: &Renames, folder: Option<&Path>, tinted: &mut Tinted) -> String {
-    let mut members = Vec::new();
+/// Add copies of `objs` with new handles, their block references renamed by `renames` and their
+/// files rebased on `folder`, each painted in its comparison color, into a new block definition
+/// named `name` (or `name_2`… when that name is taken), and insert a single reference to it into
+/// model space at the origin (as AutoCAD's COMPAREEXPORT does — not a selection group). Returns
+/// the block's name; when `objs` is empty, no block or reference is created and the free name is
+/// still returned for the caller's bookkeeping.
+fn add_block(d: &mut Drawing, name: &str, objs: &[(&Entity, Color)], renames: &Renames, folder: Option<&Path>, tinted: &mut Tinted) -> String {
+    let mut entities = EntityStore::new();
     for (e, color) in objs {
         d.ensure_layer(&e.common.layer);
         let h = d.new_handle();
@@ -257,12 +262,25 @@ fn add_group(d: &mut Drawing, name: &str, objs: &[(&Entity, Color)], renames: &R
         rebase(&mut copy.kind, folder);
         rename_refs(&mut copy.kind, renames);
         paint(d, &mut copy, *color, tinted, 0);
-        d.model.push(copy);
-        members.push(h);
+        entities.push(copy);
     }
-    let name = free_name(name, d.groups.len(), |n| d.groups.iter().any(|g| g.name.eq_ignore_ascii_case(n)));
-    if !members.is_empty() {
-        d.groups.push(Group { name: name.clone(), description: String::new(), selectable: true, members });
+    let name = free_name(name, d.blocks.len(), |n| d.blocks.keys().any(|k| k.eq_ignore_ascii_case(n)));
+    if !entities.is_empty() {
+        let block = Block { name: name.clone(), entities, ..Block::new(&name) };
+        d.blocks.insert(name.clone(), Arc::new(block));
+        let reference = Insert {
+            block: name.clone(),
+            insert: Vec3::ZERO,
+            scale: Vec3::new(1.0, 1.0, 1.0),
+            rotation: 0.0,
+            attribs: Vec::new(),
+            cols: 1,
+            rows: 1,
+            col_spacing: 0.0,
+            row_spacing: 0.0,
+        };
+        let h = d.new_handle();
+        d.model.push(Entity::new(h, EntityKind::Insert(reference)));
     }
     name
 }

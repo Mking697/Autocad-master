@@ -1,6 +1,7 @@
-//! COMPAREEXPORT: the comparison as a new drawing, with this drawing's objects in one group and
-//! the other drawing's differing objects in another, in the comparison colors. A compared file's
-//! relative xref paths, which need the file-reading hook, are tested in `tests/compare.rs`.
+//! COMPAREEXPORT: the comparison as a new drawing, with this drawing's objects in one block
+//! definition (inserted once into model space) and the other drawing's differing objects in
+//! another, in the comparison colors. A compared file's relative xref paths, which need the
+//! file-reading hook, are tested in `tests/compare.rs`.
 
 use std::sync::Arc;
 
@@ -50,16 +51,17 @@ fn compared() -> Session {
     s
 }
 
-/// The objects of a group of the active drawing, in group order.
-fn members(s: &Session, group: &str) -> Vec<Arc<Entity>> {
+/// The objects of a block of the active drawing, in draw order (model space holds a single
+/// reference to it, not a selection group).
+fn members(s: &Session, block: &str) -> Vec<Arc<Entity>> {
     let d = s.doc().unwrap();
-    let g = d.groups.iter().find(|g| g.name == group).unwrap_or_else(|| panic!("no group {group}"));
-    g.members.iter().map(|h| d.entity(*h).unwrap().clone()).collect()
+    let b = d.block(block).unwrap_or_else(|| panic!("no block {block}"));
+    b.entities.iter().cloned().collect()
 }
 
-/// The (type, color) of each object in a group of the active drawing, sorted.
-fn contents(s: &Session, group: &str) -> Vec<(String, Color)> {
-    let mut v: Vec<(String, Color)> = members(s, group).iter().map(|e| (e.kind.type_name().to_string(), e.common.color)).collect();
+/// The (type, color) of each object in a block of the active drawing, sorted.
+fn contents(s: &Session, block: &str) -> Vec<(String, Color)> {
+    let mut v: Vec<(String, Color)> = members(s, block).iter().map(|e| (e.kind.type_name().to_string(), e.common.color)).collect();
     v.sort_by(|a, b| a.0.cmp(&b.0));
     v
 }
@@ -83,7 +85,7 @@ const RED: Color = Color::True(Rgb(0xff, 0x5c, 0x5c));
 const GRAY: Color = Color::Index(8);
 
 #[test]
-fn exports_both_drawings_as_colored_groups_in_a_new_drawing() {
+fn exports_both_drawings_as_colored_block_references_in_a_new_drawing() {
     let mut s = compared();
     let before = s.docs.len();
     let before_epoch = s.doc_epoch;
@@ -110,11 +112,21 @@ fn exports_both_drawings_as_colored_groups_in_a_new_drawing() {
         _ => None,
     });
     assert_eq!(circle_there.map(|c| (c.x, c.y)), Some((5.0, 5.0)));
-    // Model space holds the other drawing's objects first, then this drawing's.
+    // Model space holds no groups: one block reference for the other drawing's set, then one
+    // for this drawing's, in that order (so this drawing's draws over the other's).
     let d = s.doc().unwrap();
-    let order: Vec<Handle> = d.model.iter().map(|e| e.handle).collect();
-    let groups: Vec<Handle> = members(&s, other).iter().chain(members(&s, cur).iter()).map(|e| e.handle).collect();
-    assert_eq!(order, groups);
+    assert!(d.groups.is_empty(), "no selection group is created for the exported sets");
+    let refs: Vec<String> = d
+        .model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EntityKind::Insert(i) => Some(i.block.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refs, vec![other.to_string(), cur.to_string()], "the other drawing's block reference is inserted first");
+    assert_eq!(d.model.len(), 2, "model space holds only the two block references");
+    assert!(d.block(other).is_some() && d.block(cur).is_some(), "each set got its own block definition");
     // Every handle is new and unique.
     let mut seen = std::collections::HashSet::new();
     for e in d.model.iter().chain(d.blocks.values().flat_map(|b| b.entities.iter())) {
@@ -141,7 +153,8 @@ fn takes_the_other_drawings_layers_and_blocks_it_needs() {
     other.blocks.insert("BOLT".into(), Arc::new(bolt));
     other.layers.push(Layer::new("Parts"));
     other.add(&Space::Model, Common { layer: "Parts".into(), ..Common::default() }, EntityKind::Insert(insert("PART"))).unwrap();
-    // A group of this drawing's name does not carry over, so the snapshot takes the first name.
+    // A group of this drawing's name does not carry over, and does not collide with the block
+    // name either (COMPAREEXPORT picks block names, not group names).
     s.execute("group", &json!({"name": "COMPARE_CURRENT", "handles": [handle_of(&s, "Line")]})).unwrap();
     s.open_drawing(other, "Other", None);
     s.execute("document.switch", &json!({"index": 0})).unwrap();
@@ -149,7 +162,7 @@ fn takes_the_other_drawings_layers_and_blocks_it_needs() {
     let r = s.execute("compareexport", &json!({})).unwrap();
     assert_eq!(r["current"], "COMPARE_CURRENT", "{r}");
     let d = s.doc().unwrap();
-    assert_eq!(d.groups.len(), 2);
+    assert!(d.groups.is_empty(), "no selection group is created for the exported sets");
     assert!(d.layer("Parts").is_some());
     assert!(d.block("PART").is_some() && d.block("BOLT").is_some(), "nested blocks are copied");
     assert_eq!(ends(&s, "COMPARE_COMPARED_BOLT"), vec![1.0], "and shown through red copies");
@@ -528,6 +541,7 @@ fn a_dimension_block_copy_keeps_its_geometry_when_the_snapshot_is_saved() {
     let block = read
         .model
         .iter()
+        .chain(read.blocks.values().flat_map(|b| b.entities.iter()))
         .find_map(|e| match &e.kind {
             EntityKind::Dimension(dm) => dm.block.clone(),
             _ => None,
@@ -693,9 +707,11 @@ fn edits_after_compare_count_and_objects_keep_their_layers() {
     let mut got = contents(&s, r["current"].as_str().unwrap());
     got.sort_by_key(|(_, c)| *c == GRAY);
     assert_eq!(got, vec![("Line".into(), GREEN), ("Line".into(), GRAY)], "{r}");
-    // The copies sit in model space on their own layer, not inside a block.
+    // The copies sit in the block definition on their own layer, not loose in model space.
     let d = s.doc().unwrap();
-    assert!(d.model.iter().all(|e| e.common.layer == "0" && matches!(e.kind, EntityKind::Line(_))));
+    let block = d.block(r["current"].as_str().unwrap()).unwrap();
+    assert!(block.entities.iter().all(|e| e.common.layer == "0" && matches!(e.kind, EntityKind::Line(_))));
+    assert!(d.model.iter().all(|e| matches!(e.kind, EntityKind::Insert(_))), "model space holds only block references");
 }
 
 #[test]
@@ -704,7 +720,12 @@ fn copies_drop_associations_to_the_source_objects() {
     s.execute("line", &json!({"points": [[0, 0], [10, 0]]})).unwrap();
     let l = handle_of(&s, "Line");
     s.execute("dimlinear", &json!({"object": l, "at": [5, 3]})).unwrap();
-    let assoc = |d: &Drawing| d.model.iter().find_map(|e| if let EntityKind::Dimension(dm) = &e.kind { Some(dm.assoc.len()) } else { None });
+    let assoc = |d: &Drawing| -> Option<usize> {
+        d.model
+            .iter()
+            .chain(d.blocks.values().flat_map(|b| b.entities.iter()))
+            .find_map(|e| if let EntityKind::Dimension(dm) = &e.kind { Some(dm.assoc.len()) } else { None })
+    };
     assert!(assoc(s.doc().unwrap()).is_some_and(|n| n > 0), "the dimension follows the line");
     s.open_drawing(Drawing::new_imperial(), "Other", None);
     s.execute("document.switch", &json!({"index": 0})).unwrap();
@@ -738,7 +759,7 @@ fn relative_xref_paths_become_paths_from_the_source_folder() {
     assert_eq!(std::path::Path::new(&got), folder.join("parts").join("x.dwg"));
     // Images in model space and in blocks too.
     let want = folder.join("img").join("a.png");
-    let images = d.model.iter().chain(d.block("PIC").unwrap().entities.iter()).filter_map(|e| match &e.kind {
+    let images = d.model.iter().chain(d.blocks.values().flat_map(|b| b.entities.iter())).filter_map(|e| match &e.kind {
         EntityKind::Image(i) => Some(i.path.clone()),
         _ => None,
     });
