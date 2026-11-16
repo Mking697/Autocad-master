@@ -129,6 +129,24 @@ fn make(style: String, at: Vec2, rotation: f64, text: String) -> Tolerance {
     Tolerance { insert: v3(at), dir: Vec2::from_angle(rotation).to3(0.0), style, text }
 }
 
+/// Builds a feature-control-frame `Tolerance` entity from tolerance-content JSON — the same
+/// fields TOLERANCE itself takes (`symbol`, `tol1`, `tol2`, `datums`, `line2`, `height`,
+/// `projected`, `datumId`, `style`, `text`), minus `at` (given separately here). Lets
+/// LEADER end in a feature control frame, reusing this module's frame geometry and symbols.
+/// This is JSON command wiring only; it does not add QLEADER or interactive leader prompts.
+/// `cmd` is the caller's command id, used in validation errors.
+pub(crate) fn leader_tolerance(cmd: &str, s: &Session, p: &Value, at: Vec2, rotation: f64) -> Result<EntityKind> {
+    let text = frame_text(p)?;
+    if cadcraft_doc::parse_frame(&text).iter().flatten().all(cadcraft_doc::compartment_is_empty) {
+        return Err(bad(cmd, "the feature control frame is empty"));
+    }
+    let style = str_param(p, "style").map(str::to_string).unwrap_or_else(|| current_dimstyle(s));
+    if s.doc()?.dim_style(&style).is_none() {
+        return Err(bad(cmd, format!("no dimension style `{style}`")));
+    }
+    Ok(EntityKind::Tolerance(make(style, at, rotation, text)))
+}
+
 fn run_tolerance(s: &mut Session, p: &Value) -> Result<Value> {
     let at = point_req("tolerance", p, "at")?;
     let text = frame_text(p)?;

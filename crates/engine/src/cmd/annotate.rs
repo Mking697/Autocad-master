@@ -73,7 +73,9 @@ pub fn specs() -> Vec<CommandSpec> {
             .alias(&["mld"])
             .params("{points: [[arrow], ..., [landing]] ([location] with leaderType none), text?, leaderType?: straight|spline|none, block?: name, blockAttach?: center|insertion}")
             .interactive(|s| Ok(Box::new(MLeaderM::new(s)))),
-        CommandSpec::new("leader", "Leader", run_leader).alias(&["lead"]).params("{points: [[x,y]...], text?}"),
+        CommandSpec::new("leader", "Leader", run_leader)
+            .alias(&["lead"])
+            .params("{points: [[x,y]...], text? | tolerance?: {symbol?, tol1?, tol2?, datums?, line2?, height?, projected?, datumId?, style?, text?, rotation? (degrees)}} (text and tolerance are mutually exclusive)"),
         CommandSpec::new("dimstyle.update", "Update", run_update)
             .menu(&["Dimension", "Update"])
             .params("{handles?}")
@@ -483,6 +485,20 @@ fn run_leader(s: &mut Session, p: &Value) -> Result<Value> {
     if pts.len() < 2 {
         return Err(bad("leader", "need 2+ points"));
     }
+    // Validate the optional frame before adding the leader, so invalid content cannot leave
+    // an orphan leader even when called without the command transaction wrapper.
+    let tolerance = if let Some(t) = p.get("tolerance") {
+        if !t.is_object() {
+            return Err(bad("leader", "`tolerance` must be an object"));
+        }
+        if p.get("text").is_some() {
+            return Err(bad("leader", "`text` and `tolerance` are mutually exclusive"));
+        }
+        let at = pts.last().copied().ok_or_else(|| bad("leader", "need a landing point"))?;
+        Some(super::tolerance::leader_tolerance("leader", s, t, at, super::f64_or(t, "rotation", 0.0).to_radians())?)
+    } else {
+        None
+    };
     let st = style(s);
     let h = s.add_entity(EntityKind::Leader(cadcraft_doc::Leader {
         vertices: pts.iter().map(|q| v3(*q)).collect(),
@@ -491,7 +507,9 @@ fn run_leader(s: &mut Session, p: &Value) -> Result<Value> {
         style: st,
     }))?;
     let mut out = vec![h.hex()];
-    if let (Some(t), Some(last)) = (str_param(p, "text"), pts.last()) {
+    if let Some(frame) = tolerance {
+        out.push(s.add_entity(frame)?.hex());
+    } else if let (Some(t), Some(last)) = (str_param(p, "text"), pts.last()) {
         let th = s.doc()?.dim_style(&style(s)).map(|d| d.text_height).unwrap_or(0.18);
         out.push(
             s.add_entity(EntityKind::MText(MText {

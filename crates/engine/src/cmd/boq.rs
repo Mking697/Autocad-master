@@ -32,12 +32,7 @@ pub(super) const PARAMS: &str = "{space?: current|model|all (default all)|<layou
     csvPath?, entityCount, message}";
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
-        CommandSpec::new("boq", "Bill of Quantities", run_boq)
-            .menu(&["Tools", "Bill of Quantities"])
-            .params(PARAMS)
-            .noundo(),
-    ]
+    vec![CommandSpec::new("boq", "Bill of Quantities", run_boq).menu(&["Tools", "Bill of Quantities"]).params(PARAMS).noundo()]
 }
 
 #[derive(Default)]
@@ -81,7 +76,10 @@ fn parse_rate(cmd: &str, layer: &str, v: &Value) -> Result<LayerRate> {
     let num = |key: &str| -> Result<Option<f64>> {
         match o.get(key) {
             None | Some(Value::Null) => Ok(None),
-            Some(Value::Number(n)) => n.as_f64().filter(|r| r.is_finite() && *r >= 0.0).map(Some)
+            Some(Value::Number(n)) => n
+                .as_f64()
+                .filter(|r| r.is_finite() && *r >= 0.0)
+                .map(Some)
                 .ok_or_else(|| bad(cmd, format!("`rates.{layer}.{key}` must be finite and nonnegative"))),
             Some(v) => Err(bad(cmd, format!("`rates.{layer}.{key}` must be a number, got {v}"))),
         }
@@ -176,14 +174,7 @@ fn write_csv(cmd: &str, path: &str, totals: &BTreeMap<String, LayerTotals>, rate
     for (layer, t) in totals {
         let blocks = t.blocks.iter().map(|(name, n)| format!("{name}:{n}")).collect::<Vec<_>>().join(";");
         let cost = rates.and_then(|r| rate_for(r, layer)).map(|r| format!("{:.6}", r.cost(t)));
-        out.push_str(&format!(
-            "{},{},{},{},{}\n",
-            csv_field(layer),
-            t.length,
-            t.area,
-            csv_field(&blocks),
-            cost.as_deref().unwrap_or("")
-        ));
+        out.push_str(&format!("{},{},{},{},{}\n", csv_field(layer), t.length, t.area, csv_field(&blocks), cost.as_deref().unwrap_or("")));
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -216,7 +207,10 @@ fn add_implied_loop_areas(d: &cadcraft_doc::Drawing, loops_report: &Value, total
         let Some(first_hex) = members.first().and_then(Value::as_str) else { continue };
         let Some(handle) = Handle::parse_hex(first_hex) else { continue };
         let Some(layer) = d.entity(handle).map(|e| e.common.layer.clone()) else { continue };
-        let area = lp.get("area").and_then(Value::as_f64).filter(|a| a.is_finite() && *a >= 0.0)
+        let area = lp
+            .get("area")
+            .and_then(Value::as_f64)
+            .filter(|a| a.is_finite() && *a >= 0.0)
             .ok_or_else(|| bad("boq", "implied loop has invalid area"))?;
         totals.entry(layer.clone()).or_default().area += area;
         implied.push(json!({ "layer": layer, "area": area, "members": members.clone() }));
@@ -302,7 +296,10 @@ fn run_boq(s: &mut Session, p: &Value) -> Result<Value> {
             // No pagination loss; work remains bounded by LOOPS' default pair cap.
             let report = super::inquiry::loops::analyze(d, sp, &json!({"limit": usize::MAX}))?;
             if report["capped"] == true || report["truncated"] == true {
-                return Err(bad("boq", format!("implied-loop analysis incomplete in {sp:?}: endpoint pair cap exceeded; retry with includeImpliedLoops=false")));
+                return Err(bad(
+                    "boq",
+                    format!("implied-loop analysis incomplete in {sp:?}: endpoint pair cap exceeded; retry with includeImpliedLoops=false"),
+                ));
             }
             implied_loops.extend(add_implied_loop_areas(d, &report, &mut totals)?);
         }
@@ -313,12 +310,8 @@ fn run_boq(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
 
-    let layers: BTreeMap<String, Value> = totals
-        .iter()
-        .map(|(layer, t)| {
-            (layer.clone(), json!({ "lengthTotal": t.length, "areaTotal": t.area, "blocks": t.blocks }))
-        })
-        .collect();
+    let layers: BTreeMap<String, Value> =
+        totals.iter().map(|(layer, t)| (layer.clone(), json!({ "lengthTotal": t.length, "areaTotal": t.area, "blocks": t.blocks }))).collect();
 
     let mut lines = vec![format!("BOQ: {entity_count} entities across {} space(s)", spaces.len())];
     for (layer, t) in &totals {
@@ -428,7 +421,9 @@ mod tests {
     #[test]
     fn boq_implied_areas_do_not_stop_at_default_page_limit() {
         let mut s = Session::new();
-        for i in 0..201 { triangle(&mut s, f64::from(i) * 3.0, 1.0); }
+        for i in 0..201 {
+            triangle(&mut s, f64::from(i) * 3.0, 1.0);
+        }
         let r = s.execute("boq", &json!({"includeImpliedLoops": true})).unwrap();
         assert_eq!(r["impliedLoopCount"], 201);
         assert_eq!(r["layers"]["0"]["areaTotal"], 100.5);
@@ -437,7 +432,9 @@ mod tests {
     #[test]
     fn boq_implied_cap_is_an_error_not_a_partial_estimate() {
         let mut s = Session::new();
-        for i in 0..237 { triangle(&mut s, f64::from(i) * 3.0, 1.0); }
+        for i in 0..237 {
+            triangle(&mut s, f64::from(i) * 3.0, 1.0);
+        }
         let e = s.execute("boq", &json!({"includeImpliedLoops": true})).unwrap_err().to_string();
         assert!(e.contains("cap"), "{e}");
         assert!(s.execute("boq", &json!({})).is_ok());

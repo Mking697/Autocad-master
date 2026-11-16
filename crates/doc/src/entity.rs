@@ -107,6 +107,11 @@ pub struct Common {
     /// The annotation scales an annotative object supports (empty: not annotative).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub anno_scales: Vec<crate::AnnoScale>,
+    /// Reserved per-scale position-offset metadata (case-insensitive scale name → offset).
+    /// Rendering and MOVE do not use this yet; ANNORESET only clears the metadata.
+    /// Serialized in the native document, but not round-tripped to DXF/DWG.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub scale_position_overrides: std::collections::BTreeMap<String, Vec2>,
     /// Other applications' extended data (xdata) as read from the drawing file: whole
     /// applications, each from its `1001` group on. It is part of the object, so a copy of the
     /// object (COPY, MIRROR, ARRAY, paste) carries it, as in AutoCAD.
@@ -128,6 +133,7 @@ impl Default for Common {
             extrusion: Vec3::Z,
             plot_style: "ByLayer".into(),
             anno_scales: Vec::new(),
+            scale_position_overrides: std::collections::BTreeMap::new(),
             xdata: Vec::new(),
         }
     }

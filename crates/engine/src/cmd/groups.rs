@@ -739,11 +739,15 @@ mod tests {
         create(&mut s, None, "reserved", &hs[2..], true).unwrap();
         create(&mut s, Some("Source"), "source description", &hs[..2], false).unwrap();
         let before = s.doc().unwrap().groups.clone();
-        let result = s.execute("copy", &json!({
-            "handles": [hs[0].hex(), hs[1].hex()], "delta": [2, 3], "count": 2
-        })).unwrap();
-        let copied = result["handles"].as_array().unwrap().iter()
-            .map(|h| Handle::parse_hex(h.as_str().unwrap()).unwrap()).collect::<Vec<_>>();
+        let result = s
+            .execute(
+                "copy",
+                &json!({
+                    "handles": [hs[0].hex(), hs[1].hex()], "delta": [2, 3], "count": 2
+                }),
+            )
+            .unwrap();
+        let copied = result["handles"].as_array().unwrap().iter().map(|h| Handle::parse_hex(h.as_str().unwrap()).unwrap()).collect::<Vec<_>>();
         assert_eq!(copied.len(), 4);
         let after = s.doc().unwrap().groups.clone();
         assert_eq!(after.len(), 4);

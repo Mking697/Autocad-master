@@ -94,15 +94,32 @@ pub fn parse_lock_name(name: &str) -> Option<&str> {
 /// What to do with the file system.
 #[derive(Clone, Debug)]
 pub enum Job {
-    /// Write `doc` (drawing `uid`) to `path`.
+    /// Write `doc` (drawing `uid`) to `path`, carrying its preferred format in `hint`.
+    /// The native recovery writer retains DXF while the DWG bridge is lossy.
     Write {
         uid: u64,
         path: String,
         doc: Arc<Drawing>,
+        /// A file name whose extension tells the writer which format to use (the autosave file
+        /// on disk always keeps the `.sv$` extension so recovery/cleanup can recognize it; this
+        /// is only a format hint passed to the writer). See [`format_hint`].
+        hint: String,
     },
     Delete {
         path: String,
     },
+}
+
+/// The drawing's preferred save format: DWG/DWT paths prefer DWG, others prefer DXF.
+/// This preference is threaded through the job, not inferred from the `.sv$` file name.
+/// The native writer currently retains DXF recovery for DWG too: the DWG bridge cannot
+/// preserve all drawing data yet, so matching the source format must not risk recovery data.
+fn format_hint(doc_path: Option<&str>) -> &'static str {
+    let is_dwg = doc_path
+        .and_then(|p| std::path::Path::new(p).extension())
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .is_some_and(|e| e == "dwg" || e == "dwt");
+    if is_dwg { "autosave.dwg" } else { "autosave.dxf" }
 }
 
 #[derive(Debug, Default)]
@@ -222,7 +239,8 @@ impl Autosaver {
             t.written = Some(Arc::downgrade(&st.doc));
             t.host = Some(Arc::downgrade(st.drawing()));
             t.since = None;
-            jobs.push(Job::Write { uid: st.uid, path, doc });
+            let hint = format_hint(st.path.as_deref()).to_string();
+            jobs.push(Job::Write { uid: st.uid, path, doc, hint });
         }
         jobs
     }
@@ -351,8 +369,18 @@ mod native {
         builder.create(dir)
     }
 
-    fn write_file(write: WriteHook, doc: &Drawing, path: &str) -> std::result::Result<(), String> {
-        let bytes = write(doc, "autosave.dxf")?;
+    fn write_file(write: WriteHook, doc: &Drawing, path: &str, hint: &str) -> std::result::Result<(), String> {
+        // The current DWG bridge drops foreign entities/objects and other raw drawing data
+        // (docs/gaps.md, file-format alpha blocker). A crash snapshot must not use that lossy
+        // route, even when the original drawing is DWG/DWT. Keep the recoverable DXF in .sv$
+        // until the writer exposes a lossless-recovery capability; do not guess from entity types.
+        let recovery_hint = if hint == "autosave.dwg" {
+            log::warn!("autosave {path}: retaining DXF recovery format because the DWG writer is lossy");
+            "autosave.dxf"
+        } else {
+            hint
+        };
+        let bytes = write(doc, recovery_hint)?;
         if let Some(dir) = Path::new(path).parent() {
             create_folder(dir).map_err(|e| e.to_string())?;
         }
@@ -414,21 +442,22 @@ mod native {
             for job in jobs {
                 match job {
                     Job::Delete { path } => discard(&path),
-                    Job::Write { uid, path, doc } => {
+                    Job::Write { uid, path, doc, hint } => {
                         let Some(write) = crate::cmd::file::io().map(|h| h.write) else {
                             log::warn!("autosave: file formats are not available in this build");
                             continue;
                         };
-                        let spawned = std::thread::Builder::new().name("autosave".into()).spawn(move || match write_file(write, &doc, &path) {
-                            Ok(()) => {
-                                log::info!("autosaved {path}");
-                                true
-                            }
-                            Err(e) => {
-                                log::warn!("autosave {path}: {e}");
-                                false
-                            }
-                        });
+                        let spawned =
+                            std::thread::Builder::new().name("autosave".into()).spawn(move || match write_file(write, &doc, &path, &hint) {
+                                Ok(()) => {
+                                    log::info!("autosaved {path}");
+                                    true
+                                }
+                                Err(e) => {
+                                    log::warn!("autosave {path}: {e}");
+                                    false
+                                }
+                            });
                         match spawned {
                             Ok(h) => {
                                 self.busy.insert(uid);
@@ -472,6 +501,64 @@ mod native {
             if !dir.is_empty() && is_instance_id(&self.instance) {
                 let _ = std::fs::remove_file(lock_path(Path::new(&dir), &self.instance));
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod recovery_tests {
+        use super::*;
+        use cadcraft_doc::{EntityKind, Handle};
+        use serde_json::json;
+
+        #[test]
+        fn autosave_format_preserves_foreign_entities_for_dwg_paths() {
+            let source =
+                b"0\nSECTION\n2\nENTITIES\n0\nCUSTOM_FRAME\n5\n2B\n100\nAcDbEntity\n8\n0\n100\nCustomFrame\n1\nforeign-payload\n0\nENDSEC\n0\nEOF\n";
+            let dir = std::env::temp_dir().join(format!("cadcraft-format-{}", instance_id()));
+            let mut s = Session::new();
+            for doc_path in [None, Some("part.dxf"), Some("part.DWG"), Some("template.DwT")] {
+                let mut doc = cadcraft_io::read(source, "source.dxf").unwrap();
+                doc.header.set("RECOVERY_TEST", cadcraft_doc::HVal::Str("dirty".into()));
+                let st = s.state_mut().unwrap();
+                st.doc = Arc::new(doc);
+                st.path = doc_path.map(str::to_string);
+                let mut autosaver = Autosaver::new("81-a");
+                let mut jobs = autosaver.plan_with(&s, 0.0, 1, &dir.to_string_lossy(), true);
+                assert_eq!(jobs.len(), 1);
+                let Job::Write { path, doc, hint, .. } = jobs.remove(0) else { panic!("expected write") };
+                assert_eq!(hint, if matches!(doc_path, Some("part.DWG" | "template.DwT")) { "autosave.dwg" } else { "autosave.dxf" });
+                write_file(|d, n| cadcraft_io::write(d, n).map_err(|e| e.to_string()), &doc, &path, &hint).unwrap();
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(!bytes.starts_with(b"AC10"), "lossy DWG must not replace the recovery snapshot: {doc_path:?}");
+                assert!(bytes.starts_with(b"  0\r\nSECTION\r\n"), "ASCII DXF signature: {doc_path:?}");
+                assert!(bytes.trim_ascii_end().ends_with(b"EOF"));
+                let reopened = cadcraft_io::read(&bytes, &path).unwrap();
+                assert!(matches!(&reopened.entity(Handle(0x2B)).unwrap().kind, EntityKind::Unknown(u) if u.dxf_type == "CUSTOM_FRAME"));
+                assert!(String::from_utf8(bytes).unwrap().contains("foreign-payload"));
+                discard(&path);
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
+        fn autosave_format_hint_follows_each_drawing_not_the_active_tab() {
+            let mut s = Session::new();
+            s.state_mut().unwrap().path = Some("part.dwg".into());
+            s.execute("circle", &json!({"center": [0, 0], "radius": 1})).unwrap();
+            s.execute("new", &json!({})).unwrap();
+            s.state_mut().unwrap().path = Some("part.dxf".into());
+            s.execute("circle", &json!({"center": [1, 1], "radius": 2})).unwrap();
+            let mut a = Autosaver::new("81-b");
+            let jobs = a.plan_with(&s, 0.0, 1, "unused", true);
+            let mut hints: Vec<_> = jobs
+                .iter()
+                .filter_map(|j| match j {
+                    Job::Write { hint, .. } => Some(hint.as_str()),
+                    _ => None,
+                })
+                .collect();
+            hints.sort_unstable();
+            assert_eq!(hints, ["autosave.dwg", "autosave.dxf"]);
         }
     }
 }

@@ -538,11 +538,11 @@ fn collinear(
                 rep.overlapping += 1;
             }
         } else {
-            finish(&keeper, k_t0, k_t1, grown, changed);
+            finish(keeper, k_t0, k_t1, grown, changed);
             (k_t0, k_t1, keeper, grown) = (t0, t1, m, false);
         }
     }
-    finish(&keeper, k_t0, k_t1, grown, changed);
+    finish(keeper, k_t0, k_t1, grown, changed);
 }
 
 /// Arcs and circles on the same circle: a circle covers every arc on it; arcs lying on another

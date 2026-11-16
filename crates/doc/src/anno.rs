@@ -8,6 +8,7 @@
 //! supports unless `ANNOALLVISIBLE` is 1. Model space is seen at `CANNOSCALE`, a layout viewport
 //! at its viewport scale, and paper space itself at 1:1.
 
+use cadcraft_geom::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::{Common, Drawing, Entity, EntityKind};
@@ -130,6 +131,29 @@ impl Common {
     pub fn supports_scale(&self, name: &str) -> bool {
         self.anno_scales.iter().any(|s| s.name.eq_ignore_ascii_case(name))
     }
+    /// Stored position-offset metadata for `name`, or `None` when unset.
+    /// Rendering and MOVE do not consume this metadata yet.
+    pub fn scale_position(&self, name: &str) -> Option<Vec2> {
+        self.scale_position_overrides.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, p)| *p)
+    }
+    /// Store position-offset metadata for a scale (case-insensitive). Zero removes it.
+    /// This does not move the object: per-scale rendering/editing is not implemented yet.
+    pub fn set_scale_position(&mut self, name: &str, offset: Vec2) {
+        self.scale_position_overrides.retain(|n, _| !n.eq_ignore_ascii_case(name));
+        if offset != Vec2::ZERO {
+            self.scale_position_overrides.insert(name.to_string(), offset);
+        }
+    }
+    /// Clear stored per-scale position metadata; return whether anything changed.
+    /// This has no visual effect until per-scale positions are integrated into rendering.
+    pub fn reset_scale_positions(&mut self) -> bool {
+        if self.scale_position_overrides.is_empty() {
+            false
+        } else {
+            self.scale_position_overrides.clear();
+            true
+        }
+    }
 }
 
 /// How `e` draws in a view whose annotation scale is `view` (drawing units per paper unit). An
@@ -246,5 +270,38 @@ impl Drawing {
             EntityKind::Insert(ins) => self.block(&ins.block).is_some_and(|b| b.annotative),
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[test]
+    fn scale_position_metadata_is_case_insensitive_and_zero_removes_it() {
+        let mut c = Common::default();
+        assert_eq!(c.scale_position("Site"), None);
+        c.set_scale_position("Site", Vec2::new(1.0, 2.0));
+        c.set_scale_position("SITE", Vec2::new(3.0, 4.0));
+        assert_eq!(c.scale_position_overrides.len(), 1);
+        assert_eq!(c.scale_position("site"), Some(Vec2::new(3.0, 4.0)));
+        c.set_scale_position("site", Vec2::ZERO);
+        assert!(c.scale_position_overrides.is_empty());
+        assert!(!c.reset_scale_positions());
+        c.set_scale_position("Site", Vec2::new(1.0, 2.0));
+        assert!(c.reset_scale_positions());
+        assert!(!c.reset_scale_positions());
+    }
+
+    #[test]
+    fn scale_position_metadata_roundtrips_and_old_common_defaults_empty() {
+        let mut c = Common::default();
+        let old = serde_json::to_value(&c).unwrap();
+        assert!(old.get("scalePositionOverrides").is_none());
+        let restored: Common = serde_json::from_value(old).unwrap();
+        assert!(restored.scale_position_overrides.is_empty());
+        c.set_scale_position("1:50", Vec2::new(5.0, 6.0));
+        let restored: Common = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(restored, c);
     }
 }

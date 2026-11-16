@@ -35,7 +35,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .interactive(|_| Ok(Box::new(SelectRun::new("aiobjectscaleremove", "AIOBJECTSCALEREMOVE")))),
         CommandSpec::new("annoreset", "Synchronize Multiple-scale Positions", run_annoreset)
             .menu(&["Modify", "Annotative Object Scale", "Synchronize Multiple-scale Positions"])
-            .params("{handles?} (every scale of an annotative object shares one position)")
+            .params("{handles?} (clears stored position metadata only; per-scale rendering/editing is not implemented) → {objects, changed, metadataOnly}")
             .interactive(|_| Ok(Box::new(SelectRun::new("annoreset", "ANNORESET")))),
         CommandSpec::new("annoupdate", "Annotative Update", run_annoupdate)
             .params("{handles?} (makes text, dimensions, multileaders and block references annotative or not as their style or block is)")
@@ -216,8 +216,24 @@ fn with_handles(s: &Session, p: &Value, mut extra: Value) -> Value {
 
 fn run_annoreset(s: &mut Session, p: &Value) -> Result<Value> {
     let (hs, _) = annotative_targets(s, p, "annoreset")?;
-    // One position serves every scale of an object, so they are always in step.
-    Ok(json!({ "objects": hs.len(), "message": format!("{} annotative object(s) synchronized", hs.len()) }))
+    let d = s.doc_mut()?;
+    let mut changed = 0usize;
+    for h in &hs {
+        // Do not dirty the document or create an entity edit for an empty metadata map.
+        if d.entity(*h).is_none_or(|e| e.common.scale_position_overrides.is_empty()) {
+            continue;
+        }
+        d.modify_entity(*h, |e| {
+            e.common.reset_scale_positions();
+        })?;
+        changed += 1;
+    }
+    Ok(json!({
+        "objects": hs.len(),
+        "changed": changed,
+        "metadataOnly": true,
+        "message": format!("Cleared position metadata on {changed} annotative object(s); per-scale position rendering/editing is not implemented")
+    }))
 }
 
 fn run_annoupdate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -586,5 +602,32 @@ impl Interactive for ObjectScaleM {
             ObjStage::Select => {}
         }
         Ok(Step::Continue)
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use cadcraft_geom::Vec2;
+
+    #[test]
+    fn annoreset_reports_metadata_only_and_preserves_geometry_with_undo() {
+        let mut s = Session::new();
+        let r = s.execute("text", &json!({ "at": [2, 3], "text": "note", "height": 1.0 })).unwrap();
+        let h = Handle::parse_hex(r["handle"].as_str().unwrap()).unwrap();
+        s.execute("properties.set", &json!({ "handles": [h.hex()], "annotative": true })).unwrap();
+        s.doc_mut().unwrap().modify_entity(h, |e| e.common.set_scale_position("1:1", Vec2::new(4.0, 5.0))).unwrap();
+        let before = s.doc().unwrap().entity(h).unwrap().kind.clone();
+        let r = s.execute("annoreset", &json!({ "handles": [h.hex()] })).unwrap();
+        assert_eq!(r["metadataOnly"], true);
+        assert_eq!(r["changed"], 1);
+        assert_eq!(s.doc().unwrap().entity(h).unwrap().kind, before);
+        assert!(s.doc().unwrap().entity(h).unwrap().common.scale_position_overrides.is_empty());
+        s.execute("u", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().entity(h).unwrap().common.scale_position("1:1"), Some(Vec2::new(4.0, 5.0)));
+        s.execute("redo", &json!({})).unwrap();
+        assert!(s.doc().unwrap().entity(h).unwrap().common.scale_position_overrides.is_empty());
+        assert_eq!(s.execute("annoreset", &json!({ "handles": [h.hex()] })).unwrap()["changed"], 0);
+        assert!(s.execute("annoreset", &json!({ "handles": [] })).is_err());
     }
 }
