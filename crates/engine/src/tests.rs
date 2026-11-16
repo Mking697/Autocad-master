@@ -45,6 +45,34 @@ fn edits_while_a_command_runs_redraw() {
     }
 }
 
+/// #44: "lines not visible mid-command" at the engine level. Every valid point of a LINE/PLINE
+/// command must (a) commit the previous segment as a real, rendered entity and (b) keep the
+/// rubber-band preview populated for the next segment — not just for the first click. Combined
+/// with `edits_while_a_command_runs_redraw` (which proves the canvas-facing revision counter
+/// changes on every segment), this shows the engine's interactive-command state is correct for
+/// every step, not only the first. If the bug is still visible in the desktop app, it is a
+/// UI/egui-side rendering or repaint-timing issue outside what the engine tracks — see the S4 row
+/// in `docs/gaps.md` for the write-up; this crate does not depend on egui and cannot verify that.
+#[test]
+fn line_preview_and_commits_stay_populated_past_the_first_segment() {
+    let mut s = Session::new();
+    s.cmdline("LINE").unwrap();
+    s.cmdline("0,0").unwrap();
+    // After the first point only, nothing is committed yet; the rubber band already shows.
+    assert_eq!(s.doc().unwrap().model.len(), 0);
+    assert_eq!(s.preview(Vec2::new(5.0, 5.0)).len(), 1, "no rubber band after the first point");
+    for (i, p) in [(10.0, 0.0), (10.0, 5.0), (0.0, 5.0)].into_iter().enumerate() {
+        s.cmdline(&format!("{},{}", p.0, p.1)).unwrap();
+        // Each further point commits one more real Line entity (visible like any other).
+        assert_eq!(s.doc().unwrap().model.len(), i + 1, "segment {i} did not commit");
+        // And the rubber band for the next segment is still there, every time, not just once.
+        assert_eq!(s.preview(Vec2::new(p.0 + 1.0, p.1 + 1.0)).len(), 1, "no rubber band after segment {i}");
+    }
+    s.cmdline("").unwrap();
+    assert!(s.running.is_none());
+    assert_eq!(s.doc().unwrap().model.len(), 3);
+}
+
 #[test]
 fn line_undo_option_and_aliases() {
     let mut s = Session::new();
@@ -535,6 +563,27 @@ fn zoom_extents_fits_drawing() {
     let v = s.state().unwrap().view();
     assert!((v.center.x - 50.0).abs() < 1e-9);
     assert!(v.height >= 50.0);
+}
+
+/// #166: ZOOM Extents on geometry millions of units apart (a drawing body plus a far title
+/// block) frames a finite, correct view — not NaN/infinite, and not silently anchored on only one
+/// of the two pieces. (The GH report's actual complaint — that AutoCAD-style ZOOM Extents framing
+/// a legitimate 180 m gap leaves little of the content on screen — is a product/UX question the
+/// repo already addressed with `convert --window`/`--view` (#170), not a bounds-computation bug;
+/// see `docs/gaps.md` S4.)
+#[test]
+fn zoom_extents_frames_widely_separated_geometry() {
+    let mut s = Session::new();
+    s.viewport_px = (1000.0, 500.0);
+    s.execute("line", &json!({"points": [[0, 0], [1, 1]]})).unwrap();
+    s.execute("line", &json!({"points": [[5_000_000, 5_000_000], [5_000_010, 5_000_020]]})).unwrap();
+    s.execute("zoom.extents", &json!({})).unwrap();
+    let v = s.state().unwrap().view();
+    assert!(v.center.x.is_finite() && v.center.y.is_finite() && v.height.is_finite());
+    assert!(v.height > 0.0);
+    // The frame must be big enough to reach both the near-origin line and the far one.
+    assert!(v.center.x > 1.0 && v.center.y > 1.0, "far geometry must pull the view, not be dropped");
+    assert!(v.height >= 5_000_000.0, "the frame must be tall enough to reach the far geometry");
 }
 
 #[test]

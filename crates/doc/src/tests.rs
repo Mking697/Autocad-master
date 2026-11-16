@@ -43,6 +43,47 @@ fn add_and_extents() {
     assert_eq!(b.max, Vec2::new(22.0, 5.0));
 }
 
+/// #166: a drawing body and a title block/frame set millions of units apart still union to a
+/// finite box that encloses both, with no NaN/infinite bound and no silently dropped geometry
+/// (the actual #166 report is a product question about auto-fit framing, not a numeric bug; see
+/// `docs/gaps.md` S4 and the regression above in `rays_and_xlines_do_not_stretch_extents` for the
+/// one case ZOOM Extents deliberately excludes).
+#[test]
+fn extents_union_covers_widely_separated_geometry() {
+    let mut d = Drawing::new_imperial();
+    d.add(&Space::Model, Common::default(), line((0.0, 0.0), (1.0, 1.0))).unwrap();
+    d.add(&Space::Model, Common::default(), line((5_000_000.0, 5_000_000.0), (5_000_010.0, 5_000_020.0))).unwrap();
+    let b = d.extents(&Space::Model);
+    assert!(!b.is_empty());
+    assert!(b.min.is_finite() && b.max.is_finite(), "extents must stay finite far from the origin");
+    // Both entities' corners must be enclosed, not dropped or clipped by precision loss.
+    assert_eq!(b.min, Vec2::new(0.0, 0.0));
+    assert_eq!(b.max, Vec2::new(5_000_010.0, 5_000_020.0));
+    // The union is commutative and order-independent (no degenerate short-circuit on either side).
+    let mut d2 = Drawing::new_imperial();
+    d2.add(&Space::Model, Common::default(), line((5_000_000.0, 5_000_000.0), (5_000_010.0, 5_000_020.0))).unwrap();
+    d2.add(&Space::Model, Common::default(), line((0.0, 0.0), (1.0, 1.0))).unwrap();
+    assert_eq!(extents_pair(&d2), (b.min, b.max));
+}
+
+/// Even at coordinates far beyond what any real drawing uses (1e15), the union stays finite and
+/// keeps both ends distinguishable: no overflow to infinity, no NaN from subtraction, no collapse
+/// to a single point from float cancellation.
+#[test]
+fn extents_union_stays_finite_at_extreme_coordinates() {
+    let mut d = Drawing::new_imperial();
+    d.add(&Space::Model, Common::default(), line((0.0, 0.0), (1.0, 1.0))).unwrap();
+    d.add(&Space::Model, Common::default(), line((1.0e15, -1.0e15), (1.0e15 + 5.0, -1.0e15 + 5.0))).unwrap();
+    let b = d.extents(&Space::Model);
+    assert!(b.min.is_finite() && b.max.is_finite());
+    assert!(!b.min.x.is_nan() && !b.max.x.is_nan() && !b.min.y.is_nan() && !b.max.y.is_nan());
+    assert_eq!(b.min, Vec2::new(0.0, -1.0e15));
+    assert_eq!(b.max, Vec2::new(1.0e15 + 5.0, 1.0));
+    // The height/width used by ZOOM Extents framing must also stay finite and representable.
+    assert!((b.max.x - b.min.x).is_finite());
+    assert!((b.max.y - b.min.y).is_finite());
+}
+
 #[test]
 fn hidden_layers_excluded_from_extents() {
     let mut d = Drawing::new_imperial();

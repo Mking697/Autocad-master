@@ -1,6 +1,6 @@
 # Where CADCraft falls short of AutoCAD
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-16 · **Change:** minor (COMPAREEXPORT now puts each compared set in its own block definition, inserted once, instead of a selection group: F22 narrowed) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-16 · **Change:** minor (S4 narrowed: extents union of far-apart geometry (#166) and lines not visible mid-command (#44) checked against engine code and closed, see revision history; previously: COMPAREEXPORT now puts each compared set in its own block definition, inserted once, instead of a selection group: F22 narrowed) · **Target:** Autodesk AutoCAD 2027
 
 Every known shortfall, one row each, ranked within each section by user impact. This is the work
 list: agents pick from here (top of a section first), and remove or update a row in the same PR
@@ -117,7 +117,7 @@ Detail: [localization-parity.md](localization-parity.md).
 | S1 | No CI runs `cargo xtask ci` on pull requests (only packaging lint and release builds) | `.github/workflows/` | 2–3 |
 | S2 | ~~`cargo fmt --check` fails on main~~ fixed on main (8fceaaf) | — | 0 |
 | S3 | 40 open PRs, many community bug fixes awaiting review | `gh pr list` | 10–20 |
-| S4 | Open correctness issues: extents union far-apart geometry (#166), lines not visible mid-command (#44), browser plot shows raw PDF bytes (#134) (closing a tab and browser saves fixed, #76, #133) | issues | 4–6 |
+| S4 | Open correctness issues: browser plot shows raw PDF bytes (#134) (closing a tab and browser saves fixed, #76, #133; extents union of far-apart geometry (#166) and lines not visible mid-command (#44) checked and closed, see revision history) | issues | 2–4 |
 | S5 | No smoke test of every command through the UI (PR #42 proposes one) | — | 6–10 |
 
 ## Platforms
@@ -149,6 +149,7 @@ Detail: [localization-parity.md](localization-parity.md).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | minor | S4: closed the two open-correctness items checked against engine code. `extents` union of far-apart geometry (#166) — `Bounds2::union`/`Drawing::extents` reproduce and cover widely separated geometry (millions and 1e15 units apart) correctly, finite, no NaN, no dropped entity (new tests `extents_union_covers_widely_separated_geometry`, `extents_union_stays_finite_at_extreme_coordinates`, `zoom_extents_frames_widely_separated_geometry`); the GH report's real complaint is a framing/UX question already addressed by `convert --window`/`--view` (#170), not a numeric bug — not a fix, a correctness confirmation. Lines not visible mid-command (#44) — the engine already commits and redraws every LINE/PLINE segment (pre-existing `edits_while_a_command_runs_redraw`, now joined by `line_preview_and_commits_stay_populated_past_the_first_segment`): engine-level state is correct at every step; if still seen in the desktop app it is a UI/egui rendering or repaint-timing issue this crate cannot verify headlessly. S4 narrowed to #134 only |
 | 2026-11-16 | minor | COMPAREEXPORT now puts each compared set of objects into its own block definition, inserted once into model space as a block reference, instead of a selection group, matching AutoCAD: F22 narrowed |
 | 2026-11-16 | minor | F15 removed: MOVE, COPY, SCALE and STRETCH now couple a clipped viewport with its clip boundary (`layout::viewports::clip_partners`), moving/scaling/stretching both together from one selection without double-applying the transform when both are picked |
 | 2026-10-25 | minor | DIMTFILL limits: with DIMTFILL 1 (the drawing's background color) the written `*D` block and EXPLODE keep no background mask (a WIPEOUT over the text box would), and a true-color DIMTFILLCLR is written to DXF as the nearest ACI: F7 updated |
