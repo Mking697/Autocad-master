@@ -106,6 +106,34 @@ fn tab_cycling_candidates_start_with_the_running_snap() {
 }
 
 #[test]
+fn tab_cycling_offers_every_overlapping_endpoint_not_just_the_closest() {
+    // Two separate lines that share an endpoint at the origin: Tab cycling with Endpoint
+    // running must offer both lines' endpoints there, not collapse to the nearest one (U4).
+    let mut s = drawing();
+    s.script("LINE 0,0 1,5\n\n").unwrap();
+    let d = s.doc().unwrap();
+    let space = s.space();
+    let cursor = Vec2::new(0.02, -0.01);
+    let cands = snap_candidates(d, &space, cursor, 0.125, mode::END, None, false);
+    let ends: Vec<Vec2> = cands.iter().filter(|h| h.mode == mode::END).map(|h| h.point).collect();
+    assert!(ends.iter().any(|p| near(*p, 0.0, 0.0)), "{ends:?}");
+    // Every line touching the shared corner also has a far endpoint just outside the aperture;
+    // only the near, shared corner is expected inside it (deduped once, not once per line).
+    assert_eq!(ends.iter().filter(|p| near(**p, 0.0, 0.0)).count(), 1, "the shared corner must not repeat: {ends:?}");
+
+    // Two distinct, separately reachable endpoints of different objects within one aperture.
+    let mut s2 = drawing();
+    s2.script("LINE 10,0.02 10,5\n\n").unwrap(); // a new line ending 0.02 from the existing corner 10,0
+    let d2 = s2.doc().unwrap();
+    let space2 = s2.space();
+    let cursor2 = Vec2::new(10.0, 0.01);
+    let cands2 = snap_candidates(d2, &space2, cursor2, 0.125, mode::END, None, false);
+    let ends2: Vec<Vec2> = cands2.iter().filter(|h| h.mode == mode::END).map(|h| h.point).collect();
+    assert!(ends2.iter().any(|p| near(*p, 10.0, 0.0)), "{ends2:?}");
+    assert!(ends2.iter().any(|p| near(*p, 10.0, 0.02)), "both nearby endpoints must be offered, not just the closest: {ends2:?}");
+}
+
+#[test]
 fn a_command_keyword_wins_over_a_snap_word() {
     let mut s = drawing();
     // ARC's Center keyword is still `cen`; `_cen` is the override.

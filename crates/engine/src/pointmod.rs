@@ -120,14 +120,34 @@ pub fn snap_name(m: u32) -> &'static str {
 }
 
 /// The candidate snaps near `cursor` for Tab cycling: the snap [`crate::snap::osnap`] picks
-/// first, then the closest snap of each other mode in `osmode`, nearest first, without repeats.
+/// first; then, for the point-like modes (Endpoint, Midpoint, Center, Geometric Center, Node,
+/// Quadrant, Insertion), *every* distinct candidate within `aperture` from every nearby object,
+/// not just the closest one of each mode (two overlapping endpoints at a shared corner both
+/// offer, so Tab can reach either); then the closest snap of the remaining modes (Perpendicular,
+/// Tangent, Nearest, Intersection, Apparent Intersection, Extension, Parallel — base-dependent or
+/// computed from the cursor, so only one candidate is practical). Nearest first, without repeats.
 pub fn snap_candidates(d: &Drawing, space: &Space, cursor: Vec2, aperture: f64, osmode: u32, base: Option<Vec2>, deferred: bool) -> Vec<SnapHit> {
     if osmode & !mode::HATCH == 0 || osmode & mode::OFF != 0 {
         return Vec::new();
     }
     let osnap = |m: u32| crate::snap::osnap(d, space, cursor, aperture, m, base, deferred);
     let extra = osmode & mode::HATCH;
-    let mut per_mode: Vec<SnapHit> = mode::ALL.iter().filter(|(b, _)| osmode & b != 0).filter_map(|(b, _)| osnap(*b | extra)).collect();
+    // Point-like modes: every raw candidate point gathered from nearby objects, not just the
+    // closest. The other modes (PER/TAN/NEA/INT/APP/EXT/PAR) keep the single-best-per-mode path.
+    const MULTI: u32 = mode::END | mode::MID | mode::CEN | mode::GCEN | mode::NOD | mode::QUA | mode::INS;
+    let multi_modes = osmode & MULTI;
+    let mut per_mode: Vec<SnapHit> = Vec::new();
+    if multi_modes != 0 {
+        let ix = crate::spatial::index(d, space);
+        if let Some((raw, _)) = crate::snap::gather(d, space, &ix, cursor, aperture, multi_modes | extra) {
+            for (m, p) in raw {
+                if m & multi_modes != 0 && p.is_finite() && p.dist(cursor) <= aperture {
+                    per_mode.push(SnapHit { point: p, mode: m, name: snap_name(m), viewport: None, deferred: None });
+                }
+            }
+        }
+    }
+    per_mode.extend(mode::ALL.iter().filter(|(b, _)| osmode & b != 0 && b & MULTI == 0).filter_map(|(b, _)| osnap(*b | extra)));
     per_mode.sort_by(|a, b| a.point.dist(cursor).total_cmp(&b.point.dist(cursor)));
     let mut out: Vec<SnapHit> = osnap(osmode).into_iter().collect();
     for h in per_mode {
