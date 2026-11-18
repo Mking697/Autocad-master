@@ -134,7 +134,7 @@ fn object_commands(app: &CadApp) -> Vec<(&'static str, Option<&'static str>)> {
         return Vec::new();
     }
     match &first.kind {
-        EntityKind::Text(_) | EntityKind::MText(_) | EntityKind::AttDef(_) => vec![("textedit", None)],
+        EntityKind::Text(_) | EntityKind::MText(_) | EntityKind::AttDef(_) | EntityKind::Tolerance(_) => vec![("textedit", None)],
         EntityKind::Insert(_) => {
             let mut v = vec![("bedit", None), ("refedit", None)];
             if ents.iter().any(|e| matches!(&e.kind, EntityKind::Insert(i) if !i.attribs.is_empty())) {

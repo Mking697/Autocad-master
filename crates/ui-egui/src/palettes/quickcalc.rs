@@ -16,16 +16,19 @@ const MAX_HISTORY: usize = 100;
 const MAX_VARS: usize = 50;
 const KINDS: [(&str, &str); 4] = [("length", "Length"), ("area", "Area"), ("volume", "Volume"), ("angle", "Angle")];
 
+/// QuickCalc's expression, history and variables. Kept as a [`CadApp`] field (not egui's
+/// per-frame temp data) so the history and variables can be read and restored across restarts
+/// ([`profile_json`], [`load_profile`]).
 #[derive(Clone, Default)]
-struct State {
+pub struct State {
     input: String,
     /// (expression, result) newest last.
-    history: Vec<(String, String)>,
+    pub history: Vec<(String, String)>,
     /// The last result: a number or `[x, y]`, the `ans` variable.
     ans: Option<Value>,
     error: Option<String>,
     /// Variables: name and value (a number or `[x, y]`).
-    vars: Vec<(String, Value)>,
+    pub vars: Vec<(String, Value)>,
     var_name: String,
     var_expr: String,
     /// Unit tables from `cal {units: true}`: kind → [(id, symbol)].
@@ -37,10 +40,6 @@ struct State {
     conv_result: String,
     /// The command history length when a pick started; the pick's value follows it.
     pending: Option<usize>,
-}
-
-fn id() -> egui::Id {
-    egui::Id::unique("cadcraft-quickcalc")
 }
 
 /// A variable's value as typed into an expression: a number, or a point as `[x,y]`.
@@ -208,6 +207,67 @@ pub fn open(app: &mut CadApp) -> Result<Value, String> {
     crate::docking::command(app, false, &json!({ "operation": "float", "panel": panel.id(), "rect": rect }))
 }
 
+/// Bytes the saved profile's QuickCalc history/variables may occupy (hostile/corrupt profile
+/// JSON is bounded rather than trusted).
+const MAX_PROFILE_LEN: usize = 16 * 1024;
+
+/// A variable name `load_profile` accepts: the same rule as [`State::add_var`].
+fn valid_var_name(name: &str) -> bool {
+    name.len() <= 32
+        && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !["pi", "e", "ans"].contains(&name)
+}
+
+/// A variable or history value `load_profile` accepts: a finite number, or a 2-element array of
+/// finite numbers (a point).
+fn valid_value(v: &Value) -> bool {
+    match v {
+        Value::Number(n) => n.as_f64().is_some_and(f64::is_finite),
+        Value::Array(a) => a.len() == 2 && a.iter().all(|c| c.as_f64().is_some_and(f64::is_finite)),
+        _ => false,
+    }
+}
+
+/// QuickCalc's history and variables, as JSON for the host's storage next to the rest of the
+/// user profile ([`crate::options::CadApp::profile_json`]). The expression field, pending pick
+/// and unit-conversion choices are session-only and not saved.
+pub fn profile_json(app: &CadApp) -> Value {
+    let st = &app.quickcalc;
+    json!({
+        "history": st.history.iter().map(|(e, r)| json!([e, r])).collect::<Vec<_>>(),
+        "vars": st.vars.iter().map(|(n, v)| json!([n, v])).collect::<Vec<_>>(),
+    })
+}
+
+/// Restore QuickCalc's history and variables from [`profile_json`]. Unknown, malformed,
+/// oversized or out-of-range entries are skipped rather than rejecting the whole profile.
+pub fn load_profile(app: &mut CadApp, v: &Value) {
+    if v.to_string().len() > MAX_PROFILE_LEN {
+        return;
+    }
+    if let Some(history) = v.get("history").and_then(Value::as_array) {
+        app.quickcalc.history = history
+            .iter()
+            .filter_map(|e| e.as_array())
+            .filter(|e| e.len() == 2)
+            .filter_map(|e| Some((e[0].as_str()?.to_string(), e[1].as_str()?.to_string())))
+            .filter(|(expr, result)| expr.len() <= 256 && result.len() <= 256)
+            .take(MAX_HISTORY)
+            .collect();
+    }
+    if let Some(vars) = v.get("vars").and_then(Value::as_array) {
+        app.quickcalc.vars = vars
+            .iter()
+            .filter_map(|e| e.as_array())
+            .filter(|e| e.len() == 2)
+            .filter_map(|e| Some((e[0].as_str()?.to_string(), e[1].clone())))
+            .filter(|(name, value)| valid_var_name(name) && valid_value(value))
+            .take(MAX_VARS)
+            .collect();
+    }
+}
+
 /// The unit-conversion value row. The visible "Value" label names the numeric field (its
 /// AccessKit label becomes "Value"), and the placeholder repeats the meaning instead of the
 /// unexplained "1" example.
@@ -219,7 +279,7 @@ fn value_row(ui: &mut egui::Ui, value: &mut String) {
 /// Quick Calculator dock body: expression entry with evaluation, variables and unit conversion.
 pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
-    let mut st: State = ui.ctx().data_mut(|d| d.get_temp(id())).unwrap_or_default();
+    let mut st = std::mem::take(&mut app.quickcalc);
     st.collect(app);
     egui::ScrollArea::vertical().id_salt("dock-quickcalc").auto_shrink([false, false]).show(ui, |ui| {
         ui.add_space(6.0);
@@ -371,7 +431,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             });
         });
     });
-    ui.ctx().data_mut(|d| d.insert_temp(id(), st));
+    app.quickcalc = st;
 }
 
 #[cfg(test)]

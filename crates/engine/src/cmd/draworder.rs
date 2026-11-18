@@ -1,6 +1,8 @@
 //! Draw order: DRAWORDER (Above objects / Under objects / Front / Back), TEXTTOFRONT and
 //! HATCHTOBACK. The order is the order of a space's entity store, which DXF files keep as the
 //! order of their entity records (`cadcraft-io` also applies a SORTENTSTABLE when it reads one).
+//! DRAWORDER acts on the current space only, as AutoCAD does; TEXTTOFRONT and HATCHTOBACK act on
+//! every space (model space and every layout's paper space), as AutoCAD does.
 
 use std::collections::{HashMap, HashSet};
 
@@ -35,7 +37,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .params("{handles?, reference: [hex]}")
             .interactive(|_| Ok(Box::new(DrawOrderM::new(Some(Order::Under))))),
         CommandSpec::new("texttofront", "Bring Annotations to Front", run_texttofront)
-            .params("{objects?: \"text\"|\"dimensions\"|\"leaders\"|\"all\" (default all)} → {moved}")
+            .params("{objects?: \"text\"|\"dimensions\"|\"leaders\"|\"all\" (default all)} (every space: model and every layout) → {moved}")
             .interactive(|_| Ok(Box::new(TextToFrontM))),
         CommandSpec::new("texttofront.text", "Text Objects Only", |s, _| annotations_to_front(s, Annot::Text))
             .menu(&["Tools", "Draw Order", "Bring Annotations to Front", "Text Objects Only"])
@@ -51,7 +53,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .params("{} → {moved}"),
         CommandSpec::new("hatchtoback", "Send Hatches to Back", run_hatchtoback)
             .menu(&["Tools", "Draw Order", "Send Hatches to Back"])
-            .params("{} → {moved}"),
+            .params("{} (every space: model and every layout) → {moved}"),
     ]
 }
 
@@ -63,13 +65,12 @@ enum Order {
     Under,
 }
 
-/// Move `hs` in the current space's draw order, keeping their order among themselves. Above and
-/// Under place them right over the topmost reference object or right under the lowest one.
-/// Returns how many objects moved.
-fn reorder(s: &mut Session, hs: &[Handle], order: Order, refs: &[Handle]) -> Result<usize> {
-    let space = s.space();
+/// Move `hs` in `space`'s draw order, keeping their order among themselves. Above and Under
+/// place them right over the topmost reference object or right under the lowest one. Returns
+/// how many objects moved.
+fn reorder_in(s: &mut Session, space: &cadcraft_doc::Space, hs: &[Handle], order: Order, refs: &[Handle]) -> Result<usize> {
     let d = s.doc_mut()?;
-    let Some(st) = d.space_mut(&space) else { return Ok(0) };
+    let Some(st) = d.space_mut(space) else { return Ok(0) };
     let index: HashMap<Handle, usize> = st.handles().into_iter().enumerate().map(|(i, h)| (h, i)).collect();
     let mut moving: Vec<(usize, Handle)> = hs.iter().filter_map(|h| index.get(h).map(|i| (*i, *h))).collect();
     moving.sort_unstable();
@@ -102,6 +103,12 @@ fn reorder(s: &mut Session, hs: &[Handle], order: Order, refs: &[Handle]) -> Res
         }
     }
     Ok(moving.len())
+}
+
+/// Move `hs` in the current space's draw order.
+fn reorder(s: &mut Session, hs: &[Handle], order: Order, refs: &[Handle]) -> Result<usize> {
+    let space = s.space();
+    reorder_in(s, &space, hs, order, refs)
 }
 
 fn parse_order(p: &Value) -> Result<Order> {
@@ -181,15 +188,26 @@ impl Annot {
     }
 }
 
-/// Every object of the current space that `keep` accepts, in draw order.
-fn of_kind(s: &Session, keep: impl Fn(&EntityKind) -> bool) -> Result<Vec<Handle>> {
-    let d = s.doc()?;
-    Ok(d.space(&s.space()).map(|st| st.iter().filter(|e| keep(&e.kind)).map(|e| e.handle).collect()).unwrap_or_default())
+/// Every object of `space` that `keep` accepts, in draw order.
+fn of_kind_in(d: &cadcraft_doc::Drawing, space: &cadcraft_doc::Space, keep: impl Fn(&EntityKind) -> bool) -> Vec<Handle> {
+    d.space(space).map(|st| st.iter().filter(|e| keep(&e.kind)).map(|e| e.handle).collect()).unwrap_or_default()
+}
+
+/// Model space, then every layout's paper space, in tab order: TEXTTOFRONT and HATCHTOBACK act
+/// on the whole drawing, not just the current space.
+fn all_spaces(d: &cadcraft_doc::Drawing) -> Vec<cadcraft_doc::Space> {
+    let mut layouts: Vec<&cadcraft_doc::Layout> = d.layouts.iter().collect();
+    layouts.sort_by_key(|l| l.tab_order);
+    std::iter::once(cadcraft_doc::Space::Model).chain(layouts.into_iter().map(|l| cadcraft_doc::Space::Paper(l.name.clone()))).collect()
 }
 
 fn annotations_to_front(s: &mut Session, which: Annot) -> Result<Value> {
-    let hs = of_kind(s, |k| which.matches(k))?;
-    let n = reorder(s, &hs, Order::Front, &[])?;
+    let spaces = all_spaces(s.doc()?);
+    let mut n = 0usize;
+    for space in &spaces {
+        let hs = of_kind_in(s.doc()?, space, |k| which.matches(k));
+        n += reorder_in(s, space, &hs, Order::Front, &[])?;
+    }
     Ok(json!({ "moved": n, "message": format!("{n} object(s) brought to front.") }))
 }
 
@@ -208,8 +226,12 @@ fn run_texttofront(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn run_hatchtoback(s: &mut Session, _p: &Value) -> Result<Value> {
-    let hs = of_kind(s, |k| matches!(k, EntityKind::Hatch(_)))?;
-    let n = reorder(s, &hs, Order::Back, &[])?;
+    let spaces = all_spaces(s.doc()?);
+    let mut n = 0usize;
+    for space in &spaces {
+        let hs = of_kind_in(s.doc()?, space, |k| matches!(k, EntityKind::Hatch(_)));
+        n += reorder_in(s, space, &hs, Order::Back, &[])?;
+    }
     Ok(json!({ "moved": n, "message": format!("{n} hatch object(s) sent to back.") }))
 }
 

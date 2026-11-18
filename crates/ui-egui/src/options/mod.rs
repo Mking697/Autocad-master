@@ -331,6 +331,7 @@ impl CadApp {
             "snapMarkerSize": self.options.snap_marker_size,
             "timeSensitiveRightClick": self.options.time_sensitive_right_click,
             "interfaceScale": self.options.interface_scale,
+            "quickCalc": crate::palettes::quickcalc::profile_json(self),
         })
         .to_string()
     }
@@ -374,6 +375,9 @@ impl CadApp {
         }
         if let Some(n) = c.interface_scale {
             self.options.interface_scale = n;
+        }
+        if let Some(qc) = v.get("quickCalc") {
+            crate::palettes::quickcalc::load_profile(self, qc);
         }
     }
 }

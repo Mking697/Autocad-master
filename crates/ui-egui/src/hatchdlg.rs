@@ -68,6 +68,10 @@ pub struct HatchDlgState {
     /// The space its picks were made in (`DocState::edit_space`, where HATCH adds the hatch): a
     /// switch to another layout drops the dialog.
     pub space: Space,
+    /// A `PickMode::Hatch` pick in progress is for Inherit Properties (copy an existing hatch's
+    /// pattern/gradient, scale, angle, associativity and island style into `fill`), not for
+    /// switching into edit mode on the picked hatch.
+    pub inheriting: bool,
 }
 
 /// Create mode, from the drawing's HATCH settings (HPNAME, HPSCALE, HPANG, HPASSOC, HPSEPARATE,
@@ -108,29 +112,25 @@ pub fn create_state(d: &Drawing, uid: u64, gradient: bool) -> HatchDlgState {
         error: None,
         uid,
         space: Space::Model,
+        inheriting: false,
     }
 }
 
-/// Edit mode on the hatches among `handles`, showing the first one; `None` when there are none.
-pub fn edit_state(d: &Drawing, uid: u64, handles: Vec<Handle>) -> Option<HatchDlgState> {
-    let hatches: Vec<Handle> = handles.into_iter().filter(|h| matches!(d.entity(*h).map(|e| &e.kind), Some(EntityKind::Hatch(_)))).collect();
-    let first = hatches.first().and_then(|h| match &d.entity(*h)?.kind {
-        EntityKind::Hatch(x) => Some(x.clone()),
-        _ => None,
-    })?;
-    let mut st = create_state(d, uid, first.gradient.is_some());
-    let f = &mut st.fill;
-    // A gradient's own pattern is SOLID; its Pattern tab offers the current pattern (HPNAME).
-    if first.gradient.is_none() {
-        f.pattern = first.pattern.clone();
+/// Copy a hatch's own fill into `f`: pattern or gradient, scale, angle, associativity and island
+/// style. Used by edit mode (the dialog opens on the hatch's own settings) and by Inherit
+/// Properties (copy another hatch's settings without touching boundaries or origin).
+fn apply_fill(f: &mut Fill, h: &cadcraft_doc::Hatch) {
+    // A gradient's own pattern is SOLID; the Pattern tab keeps offering the current pattern
+    // (HPNAME, already in `f.pattern` from `create_state`) until a real pattern hatch is picked.
+    if h.gradient.is_none() {
+        f.pattern = h.pattern.clone();
     }
-    f.scale = if first.scale.is_finite() && first.scale > 0.0 { first.scale } else { 1.0 };
-    f.angle = Some(first.angle.to_degrees()).filter(|a| a.is_finite()).unwrap_or(0.0);
-    f.associative = first.associative;
-    f.style = first.style.min(2);
-    f.specified = false;
-    f.origin = None;
-    if let Some(g) = &first.gradient {
+    f.gradient = h.gradient.is_some();
+    f.scale = if h.scale.is_finite() && h.scale > 0.0 { h.scale } else { 1.0 };
+    f.angle = Some(h.angle.to_degrees()).filter(|a| a.is_finite()).unwrap_or(0.0);
+    f.associative = h.associative;
+    f.style = h.style.min(2);
+    if let Some(g) = &h.gradient {
         let up = g.name.trim().to_ascii_uppercase();
         let (inverted, base) = match up.strip_prefix("INV") {
             Some(b) => (true, b.to_string()),
@@ -143,6 +143,19 @@ pub fn edit_state(d: &Drawing, uid: u64, handles: Vec<Handle>) -> Option<HatchDl
         f.angle = Some(g.angle.to_degrees()).filter(|a| a.is_finite()).unwrap_or(0.0);
         f.centered = g.centered;
     }
+}
+
+/// Edit mode on the hatches among `handles`, showing the first one; `None` when there are none.
+pub fn edit_state(d: &Drawing, uid: u64, handles: Vec<Handle>) -> Option<HatchDlgState> {
+    let hatches: Vec<Handle> = handles.into_iter().filter(|h| matches!(d.entity(*h).map(|e| &e.kind), Some(EntityKind::Hatch(_)))).collect();
+    let first = hatches.first().and_then(|h| match &d.entity(*h)?.kind {
+        EntityKind::Hatch(x) => Some(x.clone()),
+        _ => None,
+    })?;
+    let mut st = create_state(d, uid, first.gradient.is_some());
+    apply_fill(&mut st.fill, &first);
+    st.fill.specified = false;
+    st.fill.origin = None;
     st.opened = st.fill.clone();
     st.edit = hatches;
     if st.edit.len() == 1 {
@@ -350,7 +363,15 @@ pub fn resume(app: &mut CadApp) {
         return;
     }
     st.picking = None;
-    if mode == PickMode::Hatch {
+    if mode == PickMode::Hatch && st.inheriting {
+        st.inheriting = false;
+        if let Some(h) = picks.and_then(|p| p.handles.first().copied())
+            && let Ok(d) = app.session.doc()
+            && let Some(EntityKind::Hatch(x)) = d.entity(h).map(|e| &e.kind)
+        {
+            apply_fill(&mut st.fill, x);
+        }
+    } else if mode == PickMode::Hatch {
         let next = picks.and_then(|p| app.session.doc().ok().and_then(|d| edit_state(d, st.uid, p.handles)));
         let Some(mut next) = next else { return };
         next.space = st.space.clone();
@@ -389,6 +410,7 @@ enum Action {
     Ok,
     Cancel,
     Pick(PickMode),
+    Inherit,
 }
 
 fn shape_label(name: &str) -> &'static str {
@@ -470,6 +492,12 @@ pub fn dialog(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
             *open = false;
         }
         Action::Pick(mode) => start_pick(app, mode),
+        Action::Inherit => {
+            if let Some(s) = app.hatch_dlg.as_mut() {
+                s.inheriting = true;
+            }
+            start_pick(app, PickMode::Hatch);
+        }
         Action::None => {
             if !*open {
                 app.hatch_dlg = None;
@@ -562,6 +590,9 @@ fn options_ui(ui: &mut egui::Ui, st: &mut HatchDlgState, action: &mut Action) {
         }
         if ui.button(crate::tl!("Add: Select objects")).clicked() {
             *action = Action::Pick(PickMode::Objects);
+        }
+        if st.edit.is_empty() && ui.button(crate::tl!("Inherit Properties")).clicked() {
+            *action = Action::Inherit;
         }
         ui.horizontal(|ui| {
             ui.label(crate::tf!("Boundaries picked: {n}", n = st.points.len() + st.handles.len()));
@@ -667,6 +698,51 @@ mod tests {
         resume(&mut app);
         assert_eq!(app.ui.dialog, None);
         assert_eq!(app.hatch_dlg, None);
+    }
+
+    #[test]
+    fn inherit_properties_copies_an_existing_hatchs_fill_without_touching_boundaries() {
+        let (mut app, r) = app_with_rect();
+        let source =
+            app.session.execute("hatch", &json!({ "handles": [r.hex()], "pattern": "BRICK", "scale": 3.0, "angle": 20.0 })).unwrap()["handle"]
+                .as_str()
+                .unwrap()
+                .to_string();
+        let source = Handle::parse_hex(&source).unwrap();
+        open_create(&mut app, false);
+        if let Some(st) = app.hatch_dlg.as_mut() {
+            st.points.push([50.0, 50.0]);
+            st.fill.pattern = "ANSI31".into();
+            st.inheriting = true;
+        }
+        start_pick(&mut app, PickMode::Hatch);
+        assert!(app.hatch_dlg.as_ref().is_some_and(|s| s.inheriting));
+        app.session.input(cadcraft_engine::Input::Pick(vec![source])).unwrap();
+        resume(&mut app);
+        assert_eq!(app.ui.dialog.as_deref(), Some("hatch"));
+        let st = app.hatch_dlg.clone().unwrap();
+        assert!(!st.inheriting, "flag cleared after resuming");
+        assert_eq!((st.fill.pattern.as_str(), st.fill.scale, st.fill.angle), ("BRICK", 3.0, 20.0));
+        // The boundary already picked before Inherit Properties survives untouched.
+        assert_eq!(st.points, vec![[50.0, 50.0]]);
+        assert!(st.edit.is_empty(), "still create mode, not switched into editing the source hatch");
+    }
+
+    #[test]
+    fn inherit_properties_picking_nothing_keeps_the_dialog_with_unchanged_fill() {
+        let (mut app, _) = app_with_rect();
+        open_create(&mut app, false);
+        if let Some(st) = app.hatch_dlg.as_mut() {
+            st.fill.pattern = "ANSI31".into();
+            st.inheriting = true;
+        }
+        start_pick(&mut app, PickMode::Hatch);
+        app.session.input(cadcraft_engine::Input::Enter).unwrap();
+        resume(&mut app);
+        assert_eq!(app.ui.dialog.as_deref(), Some("hatch"));
+        let st = app.hatch_dlg.clone().unwrap();
+        assert_eq!(st.fill.pattern.as_str(), "ANSI31", "nothing picked: fill is unchanged");
+        assert!(!st.inheriting);
     }
 
     #[test]

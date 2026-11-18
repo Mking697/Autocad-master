@@ -659,6 +659,38 @@ fn textedit_json_and_command_line() {
     assert!(matches!(kind(&s, &t), EntityKind::Text(x) if x.value == "hello world"));
 }
 
+/// TEXTEDIT (DDEDIT) in place on a TOLERANCE feature control frame: the frame's content
+/// changes, its location/style/rotation stay put, and an empty result is rejected the same
+/// way TOLERANCE itself rejects it. (#F8: no in-place editing of a frame's contents.)
+#[test]
+fn textedit_edits_a_tolerance_frame_in_place() {
+    let mut s = Session::new();
+    let t = h(&s.execute("tolerance", &json!({"at": [1, 2], "symbol": "flatness", "tol1": "0.1"})).unwrap());
+    let before = match kind(&s, &t) {
+        EntityKind::Tolerance(x) => x,
+        other => panic!("not a tolerance: {other:?}"),
+    };
+    let new_text = "{\\Fgdt;j}%%v0.2%%v%%vA";
+    s.execute("textedit", &json!({"handle": t, "text": new_text})).unwrap();
+    match kind(&s, &t) {
+        EntityKind::Tolerance(x) => {
+            assert_eq!(x.text, new_text);
+            assert_eq!(x.insert, before.insert, "the frame stays where it was");
+            assert_eq!(x.style, before.style);
+        }
+        other => panic!("not a tolerance: {other:?}"),
+    }
+    // Clearing the frame to nothing is rejected, same as TOLERANCE itself.
+    let err = s.execute("textedit", &json!({"handle": t, "text": ""})).unwrap_err().to_string();
+    assert!(err.contains("empty"), "{err}");
+    assert!(matches!(kind(&s, &t), EntityKind::Tolerance(x) if x.text == new_text), "rejected edit leaves the frame untouched");
+    // On a locked layer: refused, like every other TEXTEDIT target.
+    s.doc_mut().unwrap().ensure_layer("LOCKED");
+    s.doc_mut().unwrap().layer_mut("LOCKED").unwrap().locked = true;
+    s.doc_mut().unwrap().modify_entity(Handle::parse_hex(&t).unwrap(), |e| e.common.layer = "LOCKED".into()).unwrap();
+    assert!(s.execute("textedit", &json!({"handle": t, "text": "{\\Fgdt;j}%%v0.3"})).is_err());
+}
+
 #[test]
 fn explode_polyline3d_keeps_elevations() {
     let mut s = Session::new();

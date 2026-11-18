@@ -146,3 +146,44 @@ fn quickcalc_shortcut_does_not_bypass_the_unsaved_drawing_prompt() {
     assert!(!h.state().ui.docking.layout.contains(&Panel::QuickCalc));
     assert!(h.state().closing.is_some());
 }
+
+/// History and variables survive a saved-profile round trip (F22): a fresh app that loads the
+/// profile from one that calculated and defined a variable sees both again.
+#[test]
+fn history_and_variables_survive_a_profile_round_trip() {
+    let mut h = harness();
+    let (id, _, _, _) = menus::UI_COMMANDS.iter().find(|(_, label, path, _)| *label == "QuickCalc" && !path.is_empty()).unwrap();
+    menus::activate(h.state_mut(), id);
+    h.run_steps(5);
+    expression(&h).click();
+    h.run_steps(3);
+    expression(&h).type_text("2+3");
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Button, "=").click();
+    h.run_steps(3);
+    h.state_mut().quickcalc.vars.push(("myvar".into(), json!(7.5)));
+    let profile = h.state().profile_json();
+
+    let mut restored = CadApp::new(Session::default(), Services::default());
+    restored.load_profile(&profile);
+    assert_eq!(restored.quickcalc.history, vec![("2+3".to_string(), "5".to_string())]);
+    assert_eq!(restored.quickcalc.vars, vec![("myvar".to_string(), json!(7.5))]);
+}
+
+/// A corrupt or hostile saved profile's QuickCalc section never panics, and bad entries (wrong
+/// shape, an oversized or reserved variable name, an infinite value) are dropped rather than
+/// accepted.
+#[test]
+fn malformed_quickcalc_profile_entries_are_dropped_not_trusted() {
+    let mut app = CadApp::new(Session::default(), Services::default());
+    let bad = json!({
+        "version": 1,
+        "quickCalc": {
+            "history": ["not-a-pair", [1, 2, 3], [1, 2], ["ok expr", "ok result"]],
+            "vars": [["pi", 1.0], ["bad name!", 1.0], ["ok", f64::INFINITY], ["good", 3.0], 42],
+        },
+    });
+    app.load_profile(&bad.to_string());
+    assert_eq!(app.quickcalc.history, vec![("ok expr".to_string(), "ok result".to_string())]);
+    assert_eq!(app.quickcalc.vars, vec![("good".to_string(), json!(3.0))]);
+}

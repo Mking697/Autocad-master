@@ -182,6 +182,9 @@ fn restore(s: &mut Session, name: &str) -> Result<Value> {
         }
     }
     let mut msg = format!("View \"{}\" restored.", v.name);
+    if v.twist.is_finite() && v.twist != 0.0 {
+        msg.push_str(&format!(" Its view twist ({:.0}\u{b0}) is kept but not applied to the 2D display.", v.twist.to_degrees()));
+    }
     if let Some(state) = &v.layer_state {
         let d = s.doc_mut()?;
         match d.layer_states.iter().find(|l| l.name.eq_ignore_ascii_case(state)).cloned() {
@@ -219,7 +222,11 @@ fn list(s: &mut Session, pats: &[String]) -> Result<Value> {
         lines.push("  (none)".into());
     }
     for v in &views {
-        lines.push(format!("  {:<31} {}", v.name, space_label(v)));
+        let mut line = format!("  {:<31} {}", v.name, space_label(v));
+        if v.twist.is_finite() && v.twist != 0.0 {
+            line.push_str(&format!(" (twist {:.0}\u{b0}, kept, not shown in the 2D view)", v.twist.to_degrees()));
+        }
+        lines.push(line);
     }
     let rows: Vec<Value> = views
         .iter()
@@ -227,6 +234,7 @@ fn list(s: &mut Session, pats: &[String]) -> Result<Value> {
             json!({
                 "name": v.name, "space": space_label(v), "center": [v.center.x, v.center.y], "height": v.height,
                 "width": v.width, "layerSnapshot": v.layer_state.is_some(),
+                "twist": if v.twist.is_finite() { v.twist.to_degrees() } else { 0.0 },
             })
         })
         .collect();

@@ -116,6 +116,37 @@ fn paper_space_view_switches_to_its_layout() {
 }
 
 #[test]
+fn twist_is_kept_and_surfaced_in_list_and_restore() {
+    use cadcraft_engine::doc::NamedView;
+    let mut s = session();
+    // Twist only ever arrives from a foreign DXF file today (VIEW Save always writes 0), so the
+    // regression constructs one directly, as the DXF reader would after rounding to degrees.
+    s.doc_mut().unwrap().views.push(NamedView {
+        name: "Skew".into(),
+        center: Vec2::new(1.0, 2.0),
+        height: 10.0,
+        width: 10.0,
+        twist: std::f64::consts::FRAC_PI_4,
+        ..Default::default()
+    });
+    let list = s.execute("view", &json!({ "option": "list" })).unwrap();
+    let row = list["views"].as_array().unwrap().iter().find(|r| r["name"] == "Skew").unwrap();
+    assert!(close(row["twist"].as_f64().unwrap(), 45.0), "{row}");
+    assert!(list["message"].as_str().unwrap().contains("twist 45"), "{}", list["message"]);
+    let r = s.execute("view", &json!({ "option": "restore", "name": "Skew" })).unwrap();
+    let msg = r["message"].as_str().unwrap();
+    assert!(msg.contains("twist (45") && msg.contains("kept but not applied"), "{msg}");
+    // A view saved from the running session never has a twist: it is always listed as 0.
+    typed(&mut s, &["-view", "s", "Plain"]);
+    let plain = list_json(&mut s)["views"].as_array().unwrap().iter().find(|r| r["name"] == "Plain").cloned().unwrap();
+    assert_eq!(plain["twist"], json!(0.0));
+}
+
+fn list_json(s: &mut Session) -> serde_json::Value {
+    s.execute("view", &json!({ "option": "list" })).unwrap()
+}
+
+#[test]
 fn zoom_realtime_drags_and_enter_ends() {
     let mut s = session();
     set_view(&mut s, 0.0, 0.0, 100.0);

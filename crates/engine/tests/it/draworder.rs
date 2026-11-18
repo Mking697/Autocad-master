@@ -1,7 +1,7 @@
 //! Draw order (#439): DRAWORDER's Above objects / Under objects / Front / Back, typed and as JSON,
 //! TEXTTOFRONT and HATCHTOBACK.
 
-use cadcraft_engine::doc::{EntityKind, Handle};
+use cadcraft_engine::doc::{EntityKind, Handle, Space};
 use cadcraft_engine::{Input, Session};
 use serde_json::json;
 
@@ -144,4 +144,38 @@ fn texttofront_and_hatchtoback() {
     s.cmdline("texttofront").unwrap();
     s.cmdline("").unwrap();
     assert!(s.log.iter().any(|l| l.contains("2 object(s) brought to front")), "{:?}", s.log);
+}
+
+/// F19: TEXTTOFRONT and HATCHTOBACK act on every space, not just the one shown.
+#[test]
+fn texttofront_and_hatchtoback_act_on_every_space() {
+    let mut s = Session::new();
+    // Model space: a closed rectangle, then a hatch inside it, then text.
+    s.execute("rectang", &json!({ "p1": [0, 0], "p2": [1, 1] })).unwrap();
+    s.execute("hatch", &json!({ "points": [[0.5, 0.5]], "pattern": "SOLID" })).unwrap();
+    s.execute("text", &json!({ "at": [0, 0], "height": 1, "text": "M" })).unwrap();
+    let model_hatch = s.doc().unwrap().model.iter().find(|e| matches!(e.kind, EntityKind::Hatch(_))).unwrap().handle;
+
+    // Layout1 (paper space, not the one shown): a rectangle, a hatch, then text, same order.
+    s.execute("layout.set", &json!({ "name": "Layout1" })).unwrap();
+    s.execute("rectang", &json!({ "p1": [0, 0], "p2": [1, 1] })).unwrap();
+    s.execute("hatch", &json!({ "points": [[0.5, 0.5]], "pattern": "SOLID" })).unwrap();
+    s.execute("text", &json!({ "at": [0, 0], "height": 1, "text": "P" })).unwrap();
+    let paper_hatch =
+        s.doc().unwrap().space(&Space::Paper("Layout1".into())).unwrap().iter().find(|e| matches!(e.kind, EntityKind::Hatch(_))).unwrap().handle;
+    // Back to Model: TEXTTOFRONT/HATCHTOBACK act on every space regardless of which one is shown.
+    s.execute("layout.set", &json!({ "name": "Model" })).unwrap();
+    assert_eq!(s.space(), Space::Model);
+
+    let r = s.execute("texttofront", &json!({ "objects": "text" })).unwrap();
+    assert_eq!(r["moved"], 2, "one text object in each space");
+    let last_kind = |sp: &Space| s.doc().unwrap().space(sp).unwrap().iter().last().unwrap().kind.type_name();
+    assert_eq!(last_kind(&Space::Model), "Text");
+    assert_eq!(last_kind(&Space::Paper("Layout1".into())), "Text");
+
+    let r = s.execute("hatchtoback", &json!({})).unwrap();
+    assert_eq!(r["moved"], 2, "one hatch in each space");
+    let first_handle = |sp: &Space| s.doc().unwrap().space(sp).unwrap().iter().next().unwrap().handle;
+    assert_eq!(first_handle(&Space::Model), model_hatch);
+    assert_eq!(first_handle(&Space::Paper("Layout1".into())), paper_hatch);
 }
