@@ -106,7 +106,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         let mut clicked = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
             egui::ScrollArea::horizontal().id_salt("ribbon_panels").auto_shrink([false, true]).show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(false), |ui| {
                     ui.add_space(6.0);
                     if app.ui.ribbon_tab == "Home" {
                         for (i, (name, tools)) in home_panels().into_iter().enumerate() {
@@ -118,7 +118,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                             }
                             ui.vertical(|ui| {
                                 ui.add_space(4.0);
-                                ui.horizontal(|ui| {
+                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(false), |ui| {
                                     ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
                                     for (icon, cmd, tip) in &tools {
                                         if ribbon_button(ui, *icon, tip, 50.0, panel_h - 20.0).clicked() {

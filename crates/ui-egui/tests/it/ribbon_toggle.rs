@@ -32,7 +32,9 @@ fn the_ribbon_is_off_by_default_and_tool_sets_renders_as_before() {
 }
 
 /// Turning the Ribbon on adds its own tabs and Home panels, without crashing and without a
-/// control that collides with Tool Sets' own (both would otherwise claim the "Line" label).
+/// control that collides with Tool Sets' own (both would otherwise claim the "Line" label). Every
+/// panel sits in the same row (#U12: a wrapping layout once pushed Modify onto a second, clipped
+/// row, so only Draw ever showed).
 #[test]
 fn the_ribbon_shows_its_tabs_and_home_panels_once_turned_on() {
     let mut h = harness();
@@ -43,9 +45,11 @@ fn the_ribbon_shows_its_tabs_and_home_panels_once_turned_on() {
         h.get_by_label(tab);
     }
     h.get_by_label("Line");
-    h.get_by_label("Move");
     h.get_by_label("Draw");
     h.get_by_label("Modify");
+    let draw_y = h.get_by_label("Line").rect().top();
+    let move_button = h.get_by_label("Move").rect();
+    assert!((move_button.top() - draw_y).abs() < 1.0, "Modify's Move button should share Draw's row, not wrap to one below it");
 }
 
 /// Clicking a Ribbon tool starts its command, the same as the matching Tool Sets button.
