@@ -50,6 +50,16 @@ fn the_ribbon_shows_its_tabs_and_home_panels_once_turned_on() {
     let draw_y = h.get_by_label("Line").rect().top();
     let move_button = h.get_by_label("Move").rect();
     assert!((move_button.top() - draw_y).abs() < 1.0, "Modify's Move button should share Draw's row, not wrap to one below it");
+    // #U12 round 2: a vertical panel column was sized to the whole (near-infinite) ScrollArea
+    // content width instead of shrinking to its own buttons, leaving a huge gap before the next
+    // panel. Polygon (Draw's last tool) and Move (Modify's first) should sit close together.
+    let polygon_right = h.get_by_label("Polygon").rect().right();
+    let move_left = move_button.left();
+    assert!(
+        (0.0..60.0).contains(&(move_left - polygon_right)),
+        "Modify's panel should start just after Draw's last tool, not leave a wide gap (gap was {})",
+        move_left - polygon_right
+    );
 }
 
 /// Clicking a Ribbon tool starts its command, the same as the matching Tool Sets button.

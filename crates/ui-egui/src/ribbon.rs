@@ -116,7 +116,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                                 ui.painter().vline(sr.center().x, sr.y_range(), Stroke::new(1.0, t.border));
                                 ui.add_space(6.0);
                             }
-                            ui.vertical(|ui| {
+                            let panel_w = (tools.len() as f32 * 52.0 - 2.0).max(40.0);
+                            ui.allocate_ui_with_layout(vec2(panel_w, panel_h - 12.0), egui::Layout::top_down(egui::Align::Center), |ui| {
                                 ui.add_space(4.0);
                                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(false), |ui| {
                                     ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
@@ -127,10 +128,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                                     }
                                 });
                                 ui.add_space(2.0);
-                                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                                    ui.add_space(panel_h - 36.0 - 18.0);
-                                    ui.label(egui::RichText::new(crate::i18n::t(name)).color(t.text_dim).small());
-                                });
+                                ui.label(egui::RichText::new(crate::i18n::t(name)).color(t.text_dim).small());
                             });
                         }
                     } else {
