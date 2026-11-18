@@ -11,15 +11,46 @@
 //! [`Autosaver::plan`] decides what to write and delete (no I/O, so it is testable); on the desktop
 //! [`Autosaver::tick`] carries it out, writing on a background thread. SAVETIME and SAVEFILEPATH
 //! are profile settings: process-wide, not saved in the drawing.
+//!
+//! The web build has no filesystem: the app installs [`StorageHooks`] over `window.localStorage`
+//! (same pattern as [`crate::cmd::file::IoHooks`], so the engine stays I/O-agnostic and
+//! wasm-safe), and [`Autosaver::tick`]/[`Autosaver::save_now`] write synchronously instead of on a
+//! background thread. There is no lock file to tell a live tab from a crashed one, so every key
+//! that isn't this page load's own is offered for recovery; a modified timestamp travels with the
+//! bytes (an 8-byte big-endian header) since there is no file mtime to read back.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use cadcraft_doc::Drawing;
 use serde::Serialize;
 
 use crate::Session;
+
+/// Key-value storage hooks for platforms without a usable filesystem (the web build's
+/// `window.localStorage`). Installed by the app so the engine stays I/O-agnostic and wasm-safe,
+/// the same pattern as [`crate::cmd::file::IoHooks`].
+pub struct StorageHooks {
+    /// The current wall-clock time, seconds since 1970 (`Date.now() / 1000` on the web).
+    pub now_unix: fn() -> u64,
+    pub get: fn(&str) -> Option<Vec<u8>>,
+    pub set: fn(&str, &[u8]) -> std::result::Result<(), String>,
+    pub remove: fn(&str),
+    /// Every key currently stored under the host's storage (not just ours; callers filter with
+    /// [`parse_file_name`]).
+    pub keys: fn() -> Vec<String>,
+}
+
+static STORAGE: OnceLock<StorageHooks> = OnceLock::new();
+
+pub fn set_storage(h: StorageHooks) {
+    let _ = STORAGE.set(h);
+}
+
+pub fn storage() -> Option<&'static StorageHooks> {
+    STORAGE.get()
+}
 
 /// The autosave file extension.
 pub const EXT: &str = "sv$";
@@ -391,8 +422,8 @@ mod native {
 
     impl Autosaver {
         /// Autosave what is due (writing in the background) and delete files no longer needed.
-        /// Returns how long until the next autosave is due, so the host can wake up for it.
-        pub fn tick(&mut self, s: &Session) -> Option<Duration> {
+        /// Returns how many seconds until the next autosave is due, so the host can wake up for it.
+        pub fn tick(&mut self, s: &Session) -> Option<f64> {
             let now = self.start.elapsed().as_secs_f64();
             self.reap();
             let dir = savefilepath();
@@ -400,7 +431,7 @@ mod native {
             let jobs = self.plan(s, now, minutes, &dir);
             self.perform(jobs);
             self.heartbeat(&dir, now);
-            self.next_due(now, minutes).map(Duration::from_secs_f64)
+            self.next_due(now, minutes)
         }
 
         /// Autosave every drawing with changes not yet autosaved right away, without waiting for
@@ -559,6 +590,181 @@ mod native {
                 .collect();
             hints.sort_unstable();
             assert_eq!(hints, ["autosave.dwg", "autosave.dxf"]);
+        }
+    }
+}
+
+/// Prepend `modified` (seconds since 1970) to `bytes` as an 8-byte big-endian header: the only
+/// place a web autosave's timestamp can live, since there is no file mtime to read back. Pure and
+/// cross-platform so it is testable without a browser; only [`wasm_io`] calls it for real, so it
+/// is otherwise dead code off wasm32.
+#[cfg(any(target_arch = "wasm32", test))]
+fn envelope(modified: u64, bytes: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(8 + bytes.len());
+    v.extend_from_slice(&modified.to_be_bytes());
+    v.extend_from_slice(bytes);
+    v
+}
+
+/// The reverse of [`envelope`]: `None` for anything too short to hold the header.
+#[cfg(any(target_arch = "wasm32", test))]
+fn un_envelope(raw: &[u8]) -> Option<(u64, &[u8])> {
+    let (head, rest) = raw.split_at_checked(8)?;
+    Some((u64::from_be_bytes(head.try_into().ok()?), rest))
+}
+
+/// The filtering and sorting behind the web build's `recoverable`: among `entries` (every stored
+/// key and its envelope-prefixed bytes), the ones that parse as an autosave not belonging to
+/// `own`, oldest first. Pure and cross-platform so it is testable without [`StorageHooks`].
+#[cfg(any(target_arch = "wasm32", test))]
+fn recoverable_among(own: &str, entries: impl IntoIterator<Item = (String, Vec<u8>)>) -> Vec<Recoverable> {
+    let mut out = Vec::new();
+    for (name, raw) in entries {
+        let Some((title, instance, _)) = parse_file_name(&name) else { continue };
+        if instance == own {
+            continue;
+        }
+        let Some((modified, bytes)) = un_envelope(&raw) else { continue };
+        let drawing = title.to_string();
+        let bytes = bytes.len() as u64;
+        out.push(Recoverable { path: name, drawing, modified, bytes });
+    }
+    out.sort_by(|a, b| a.modified.cmp(&b.modified).then_with(|| a.path.cmp(&b.path)));
+    out
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+
+    #[test]
+    fn envelope_round_trips_the_timestamp_and_bytes() {
+        let env = envelope(1_700_000_000, b"DXF-BYTES");
+        assert_eq!(env.len(), 8 + 9);
+        assert_eq!(un_envelope(&env), Some((1_700_000_000, b"DXF-BYTES".as_slice())));
+    }
+
+    #[test]
+    fn un_envelope_refuses_anything_shorter_than_the_header() {
+        assert_eq!(un_envelope(b"short"), None);
+        assert_eq!(un_envelope(b""), None);
+    }
+
+    #[test]
+    fn recoverable_among_skips_the_owning_instance_and_unparseable_or_truncated_keys() {
+        let entries = [
+            ("Drawing1_111-a_7.sv$".to_string(), envelope(200, b"own, skipped")),
+            ("Drawing2_222-b_9.sv$".to_string(), envelope(100, b"older")),
+            ("Drawing3_333-c_11.sv$".to_string(), envelope(150, b"newer")),
+            ("not-an-autosave-key".to_string(), envelope(50, b"ignored")),
+            ("Drawing4_444-d_1.sv$".to_string(), b"hi".to_vec()),
+        ];
+        let items = recoverable_among("111-a", entries);
+        assert_eq!(items.iter().map(|r| r.drawing.as_str()).collect::<Vec<_>>(), ["Drawing2", "Drawing3"]);
+        assert_eq!(items[0].modified, 100);
+        assert_eq!(items[0].bytes, 5); // "older"
+        assert_eq!(items[1].modified, 150);
+    }
+}
+
+/// Autosave over [`StorageHooks`] (the web build, `window.localStorage`): synchronous, no
+/// background thread, and no lock file (a browser tab can't watch another one's liveness), so
+/// every key that isn't this page load's own is offered for recovery. The pure logic
+/// ([`envelope`], [`recoverable_among`]) is tested above on every target; this module is only the
+/// glue to the installed [`StorageHooks`] and is exercised by `cargo xtask wasm` (compiles) and
+/// manually in a browser, since there is no wasm test runner in this build.
+#[cfg(target_arch = "wasm32")]
+pub use wasm_io::*;
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_io {
+    use super::*;
+
+    /// The autosave keys left behind by another page load (there is no way to tell whether that
+    /// tab is still open, so everything but `own`'s own keys is offered), oldest first.
+    pub fn recoverable(own: &str) -> Vec<Recoverable> {
+        let Some(st) = storage() else { return Vec::new() };
+        recoverable_among(own, (st.keys)().into_iter().filter_map(|k| (st.get)(&k).map(|v| (k, v))))
+    }
+
+    /// Delete a recovery key the user discarded (or that was recovered and then saved). Only a
+    /// key that parses as one of ours ([`parse_file_name`]) is ever removed.
+    pub fn discard(path: &str) {
+        if parse_file_name(path).is_none() {
+            log::warn!("autosave: not deleting {path}: not an autosave key");
+            return;
+        }
+        if let Some(st) = storage() {
+            (st.remove)(path);
+        }
+    }
+
+    impl Autosaver {
+        /// Autosave what is due and delete keys no longer needed, synchronously (there is no
+        /// background thread on the web). Returns how many seconds until the next one is due.
+        pub fn tick(&mut self, s: &Session) -> Option<f64> {
+            let Some(st) = storage() else { return None };
+            let now = (st.now_unix)() as f64;
+            let dir = savefilepath();
+            let minutes = savetime();
+            let jobs = self.plan(s, now, minutes, &dir);
+            self.perform(jobs, st);
+            self.next_due(now, minutes)
+        }
+
+        /// Autosave every drawing with changes not yet autosaved right away (e.g. before the page
+        /// unloads). Returns how many drawings were written.
+        pub fn save_now(&mut self, s: &Session) -> usize {
+            let Some(st) = storage() else { return 0 };
+            let now = (st.now_unix)() as f64;
+            let jobs = self.plan_with(s, now, savetime(), &savefilepath(), true);
+            let writes = jobs.iter().filter(|j| matches!(j, Job::Write { .. })).count();
+            self.perform(jobs, st);
+            writes
+        }
+
+        /// The page closed normally: this instance's autosave keys are not needed any more.
+        pub fn shutdown(&mut self) {
+            for path in self.files() {
+                discard(&path);
+            }
+            self.docs.clear();
+        }
+
+        fn perform(&mut self, jobs: Vec<Job>, st: &StorageHooks) {
+            for job in jobs {
+                match job {
+                    Job::Delete { path } => discard(&path),
+                    Job::Write { uid, path, doc, hint } => {
+                        let Some(write) = crate::cmd::file::io().map(|h| h.write) else {
+                            log::warn!("autosave: file formats are not available in this build");
+                            continue;
+                        };
+                        // Same reasoning as the native writer: the DWG bridge is lossy, so a
+                        // crash snapshot keeps DXF even for a DWG/DWT-pathed drawing.
+                        let recovery_hint = if hint == "autosave.dwg" { "autosave.dxf" } else { hint.as_str() };
+                        match write(&doc, recovery_hint) {
+                            Ok(bytes) => {
+                                let env = envelope((st.now_unix)(), &bytes);
+                                if let Err(e) = (st.set)(&path, &env) {
+                                    log::warn!("autosave {path}: {e}");
+                                    self.unwritten(uid);
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("autosave {path}: {e}");
+                                self.unwritten(uid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        fn unwritten(&mut self, uid: u64) {
+            if let Some(t) = self.docs.get_mut(&uid) {
+                t.written = None;
+            }
         }
     }
 }

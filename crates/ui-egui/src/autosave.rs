@@ -1,7 +1,9 @@
 //! Autosave and Drawing Recovery in the app. The engine decides what to write and writes it
 //! ([`cadcraft_engine::autosave`]); this runs it every frame, keeps SAVETIME and SAVEFILEPATH with
 //! the preferences, and shows the Drawing Recovery list after a crash: each autosaved drawing can
-//! be opened (as an unsaved copy) or discarded. On the web there is no autosave yet.
+//! be opened (as an unsaved copy) or discarded. On the web, autosave goes through
+//! [`cadcraft_engine::autosave::StorageHooks`] (`window.localStorage`) instead of the filesystem;
+//! [`CadApp::enable_web_autosave`] wires it up.
 
 use cadcraft_engine::autosave::{self, Recoverable};
 use egui::{RichText, vec2};
@@ -58,6 +60,22 @@ impl CadApp {
         self.autosave = Some(saver);
     }
 
+    /// Turn autosave on (the web build): `window.localStorage` through [`autosave::StorageHooks`]
+    /// (installed by the host before this is called) instead of a file and a lock. `instance`
+    /// identifies this page load, so its own keys are never offered back to itself; a page load
+    /// that stopped without saving leaves its keys for the next one to recover.
+    #[cfg(target_arch = "wasm32")]
+    pub fn enable_web_autosave(&mut self, instance: &str) {
+        if autosave::savefilepath().is_empty() {
+            // Just a non-empty placeholder: `Autosaver::plan` only checks it isn't blank before
+            // scheduling writes. The web build has no real directory concept.
+            autosave::set_savefilepath("cadcraft-web");
+        }
+        let saver = autosave::Autosaver::new(instance);
+        self.recovery.items = autosave::recoverable(&saver.instance);
+        self.autosave = Some(saver);
+    }
+
     /// Open recovery item `i` as an unsaved copy. Its autosave file stays until that drawing is
     /// saved or closed, so a second crash doesn't lose it.
     pub fn recover_item(&mut self, i: usize) -> Result<(), String> {
@@ -75,17 +93,15 @@ impl CadApp {
     /// Delete recovery item `i`'s file.
     pub fn discard_item(&mut self, i: usize) {
         if i < self.recovery.items.len() {
-            let _item = self.recovery.items.remove(i);
-            #[cfg(not(target_arch = "wasm32"))]
-            autosave::discard(&_item.path);
+            let item = self.recovery.items.remove(i);
+            autosave::discard(&item.path);
         }
     }
 
     /// Every frame: autosave what is due, and wake up when the next one is.
-    pub fn autosave_tick(&mut self, _ctx: &egui::Context) {
-        #[cfg(not(target_arch = "wasm32"))]
+    pub fn autosave_tick(&mut self, ctx: &egui::Context) {
         if let Some(wait) = self.autosave.as_mut().and_then(|s| s.tick(&self.session)) {
-            _ctx.request_repaint_after(wait);
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
         }
     }
 
@@ -93,10 +109,7 @@ impl CadApp {
     /// session may not survive it) and show [`gpu_notice`].
     pub fn gpu_fault_tick(&mut self, ctx: &egui::Context) {
         let Some(fault) = self.gpu_faults.take() else { return };
-        #[cfg(not(target_arch = "wasm32"))]
         let saved = self.autosave.as_mut().map_or(0, |a| a.save_now(&self.session));
-        #[cfg(target_arch = "wasm32")]
-        let saved = 0;
         let autosaved = self.gpu_notice.as_ref().map_or(0, |n| n.autosaved) + saved;
         self.gpu_notice = Some(GpuNotice { fault, autosaved });
         ctx.request_repaint();
@@ -104,7 +117,6 @@ impl CadApp {
 
     /// The app closes normally: this app's autosave files are not needed any more.
     pub fn shutdown_autosave(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(s) = &mut self.autosave {
             s.shutdown();
         }
