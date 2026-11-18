@@ -25,6 +25,7 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.saveas", "Save As...", &[], None),
     ("ui.sample", "Open Sample Drawing", &["Help", "Open Sample Drawing"], None),
     ("ui.toggle.toolsets", "Tool Sets", &["Window", "Tool Sets"], Some("Cmd+3")),
+    ("ui.toggle.ribbon", "Ribbon", &["Window", "Ribbon"], None),
     ("ui.panel.properties", "Properties Inspector", &["Window", "Properties Inspector"], Some("Cmd+1")),
     ("ui.panel.layers", "Layers Palette", &["Window", "Layers Palette"], None),
     ("ui.toggle.quickcalc", "QuickCalc", &["Window", "QuickCalc"], Some("Cmd+8")),
@@ -241,6 +242,10 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
         }
         "ui.toggle.toolbar" => {
             toggle(&mut app.ui.show_toolbar, params);
+            Ok(Value::Null)
+        }
+        "ui.toggle.ribbon" => {
+            toggle(&mut app.ui.show_ribbon, params);
             Ok(Value::Null)
         }
         "ui.toggle.filetabs" => {

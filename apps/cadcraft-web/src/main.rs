@@ -157,6 +157,11 @@ mod web {
                         // Embedded, the parent sends the drawing: start on the Start tab, not Drawing1.
                         let session = if app_bridge.is_some() { Session::empty() } else { Session::new() };
                         let mut app = CadApp::new(session, services());
+                        // AutoCAD-for-Windows style Ribbon by default in the web build, matching
+                        // the reference look most people expect; Window ▸ Ribbon/Tool Sets still
+                        // toggle either independently (a saved preference below overrides this).
+                        app.ui.show_ribbon = true;
+                        app.ui.show_toolsets = false;
                         app.enable_web_autosave(&crate::storage::instance_id());
                         app.system_languages =
                             web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default();

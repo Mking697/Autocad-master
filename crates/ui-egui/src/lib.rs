@@ -46,6 +46,7 @@ pub mod palettes;
 pub mod parametric;
 pub mod plotstyles;
 pub mod quick;
+pub mod ribbon;
 pub mod shortcut_menus;
 pub mod theme;
 #[cfg(not(target_arch = "wasm32"))]
@@ -79,6 +80,12 @@ pub struct UiState {
     pub show_toolsets: bool,
     pub show_palettes: bool,
     pub show_toolbar: bool,
+    /// Show the AutoCAD-for-Windows style Ribbon above the title/toolbar row (`ribbon.rs`); off
+    /// by default to avoid doubling up with the Mac-style Tool Sets this UI otherwise follows
+    /// (toggle either independently with Window ▸ Ribbon / Window ▸ Tool Sets).
+    pub show_ribbon: bool,
+    /// The Ribbon's active tab name (one of `ribbon::TABS`).
+    pub ribbon_tab: String,
     pub show_file_tabs: bool,
     pub show_status_bar: bool,
     pub show_command_line: bool,
@@ -167,6 +174,8 @@ impl Default for UiState {
             show_toolsets: true,
             show_palettes: true,
             show_toolbar: true,
+            show_ribbon: false,
+            ribbon_tab: "Home".into(),
             show_file_tabs: true,
             show_status_bar: true,
             show_command_line: true,
@@ -821,6 +830,9 @@ impl CadApp {
         control::begin_frame(ui.ctx());
         let t = theme::Tokens::get();
         chrome::title_and_toolbar(self, ui);
+        if self.ui.show_ribbon {
+            ribbon::show(self, ui);
+        }
         if self.ui.in_window_menu {
             menus::menu_bar(self, ui);
         }
