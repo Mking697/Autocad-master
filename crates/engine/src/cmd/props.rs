@@ -1126,7 +1126,7 @@ fn run_rename(s: &mut Session, p: &Value) -> Result<Value> {
         }
         "block" => rename::block(s, &from, &to)?,
         "mleaderstyle" | "multileaderstyle" => rename::simple(s, "mleaderstyle", &from, &to)?,
-        "tablestyle" | "view" | "ucs" => rename::simple(s, &table, &from, &to)?,
+        "tablestyle" | "view" | "ucs" | "vport" => rename::simple(s, &table, &from, &to)?,
         "style" | "textstyle" => {
             run_style_rename(s, &json!({ "from": from, "to": to }))?;
         }
@@ -1171,6 +1171,7 @@ fn run_rename(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
         }
+        "plotstyle" => rename::plotstyle(s, &from, &to)?,
         _ => return Err(bad("rename", "unsupported table")),
     }
     ok()
@@ -1195,5 +1196,43 @@ mod tests {
             s.execute("properties.set", &json!({ "handles": [h], "linetype": ok })).unwrap();
             assert_eq!(lt(&s), ok);
         }
+    }
+
+    /// F1 narrowed: RENAME Vport renames a saved viewport configuration (the active one can't be
+    /// renamed).
+    #[test]
+    fn rename_renames_a_saved_viewport_configuration() {
+        let mut s = Session::new();
+        s.execute("-vports", &json!({ "option": "save", "name": "Side" })).unwrap();
+        assert!(s.doc().unwrap().vports.iter().any(|v| v.name == "Side"));
+        s.execute("rename", &json!({ "table": "vport", "from": "Side", "to": "SideView" })).unwrap();
+        assert!(s.doc().unwrap().vports.iter().any(|v| v.name == "SideView"));
+        assert!(!s.doc().unwrap().vports.iter().any(|v| v.name == "Side"));
+        assert!(s.execute("rename", &json!({ "table": "vport", "from": "*Active", "to": "X" })).is_err());
+    }
+
+    /// F1 narrowed: RENAME Plotstyle renames a named style and every layer/object that uses it
+    /// follows; "Normal" cannot be renamed.
+    #[test]
+    fn rename_renames_a_plot_style_and_its_users_follow() {
+        let mut s = Session::new();
+        s.execute("stylesmanager", &json!({ "action": "new", "name": "test.stb", "kind": "named" })).unwrap();
+        s.execute("stylesmanager", &json!({ "action": "set", "name": "test.stb", "style": { "name": "Thin" } })).unwrap();
+        s.execute("line", &json!({ "points": [[0, 0], [10, 0]] })).unwrap();
+        let h = s.doc().unwrap().model.last().unwrap().handle.hex();
+        s.execute("plotstyle", &json!({ "name": "Thin", "handles": [h] })).unwrap();
+        s.doc_mut().unwrap().ensure_layer("A");
+        s.doc_mut().unwrap().layers.iter_mut().find(|l| l.name == "A").unwrap().plot_style = "Thin".into();
+
+        s.execute("rename", &json!({ "table": "plotstyle", "from": "Thin", "to": "Thin2" })).unwrap();
+        let d = s.doc().unwrap();
+        let table = d.plot_style_tables.iter().find(|t| t.name.eq_ignore_ascii_case("test.stb")).unwrap();
+        assert!(table.styles.iter().any(|x| x.name == "Thin2"));
+        assert!(!table.styles.iter().any(|x| x.name == "Thin"));
+        assert_eq!(d.model.last().unwrap().common.plot_style, "Thin2");
+        assert_eq!(d.layers.iter().find(|l| l.name == "A").unwrap().plot_style, "Thin2");
+
+        assert!(s.execute("rename", &json!({ "table": "plotstyle", "from": "Normal", "to": "X" })).is_err());
+        assert!(s.execute("rename", &json!({ "table": "plotstyle", "from": "nope", "to": "X" })).is_err());
     }
 }

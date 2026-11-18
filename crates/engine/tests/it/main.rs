@@ -10,6 +10,7 @@ mod attdisp_attsync;
 mod attedit_prompts;
 mod attrib_modes;
 mod attrib_props;
+mod attrib_text_props;
 mod attribute_tools;
 mod block_keep;
 mod block_redefine;

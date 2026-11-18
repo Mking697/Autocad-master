@@ -78,7 +78,8 @@ pub(super) fn block(s: &mut Session, from: &str, to: &str) -> Result<()> {
     Ok(())
 }
 
-/// Rename a multileader style, a table style, a named view or a named UCS.
+/// Rename a multileader style, a table style, a named view, a named UCS or a saved viewport
+/// configuration.
 pub(super) fn simple(s: &mut Session, table: &str, from: &str, to: &str) -> Result<()> {
     let to = to.trim().to_string();
     if !valid_name(&to) {
@@ -87,12 +88,16 @@ pub(super) fn simple(s: &mut Session, table: &str, from: &str, to: &str) -> Resu
     if matches!(table, "mleaderstyle" | "tablestyle") && from.eq_ignore_ascii_case("Standard") {
         return Err(bad("rename", "the Standard style cannot be renamed"));
     }
+    if table == "vport" && from.eq_ignore_ascii_case(cadcraft_doc::VportConfig::ACTIVE) {
+        return Err(bad("rename", "the active viewport configuration cannot be renamed"));
+    }
     let d = s.doc_mut()?;
     let mut names: Vec<&mut String> = match table {
         "mleaderstyle" => d.mleader_styles.iter_mut().map(|t| &mut t.name).collect(),
         "tablestyle" => d.table_styles.iter_mut().map(|t| &mut t.name).collect(),
         "view" => d.views.iter_mut().map(|t| &mut t.name).collect(),
         "ucs" => d.ucss.iter_mut().map(|t| &mut t.name).collect(),
+        "vport" => d.vports.iter_mut().map(|t| &mut t.name).collect(),
         _ => return Err(bad("rename", "unsupported table")),
     };
     if !to.eq_ignore_ascii_case(from) && names.iter().any(|n| n.eq_ignore_ascii_case(&to)) {
@@ -121,6 +126,54 @@ pub(super) fn simple(s: &mut Session, table: &str, from: &str, to: &str) -> Resu
     repoint(d, &uses, &fix)
 }
 
+/// Rename a named plot style (within whichever attached table currently defines it) and update
+/// every layer and object that names it directly ("Normal", every table's base style, cannot be
+/// renamed — AutoCAD's own rule). Colour-dependent (`.ctb`) tables have no named styles to rename.
+pub(super) fn plotstyle(s: &mut Session, from: &str, to: &str) -> Result<()> {
+    let to = to.trim().to_string();
+    if !valid_name(&to) {
+        return Err(bad("rename", "invalid name"));
+    }
+    if from.eq_ignore_ascii_case(cadcraft_doc::NORMAL_STYLE) {
+        return Err(bad("rename", "the Normal style cannot be renamed"));
+    }
+    let d = s.doc_mut()?;
+    let table = d
+        .plot_style_tables
+        .iter_mut()
+        .find(|t| !t.is_color_dependent() && t.styles.iter().any(|x| x.name.eq_ignore_ascii_case(from)))
+        .ok_or_else(|| bad("rename", format!("no plot style `{from}`")))?;
+    if !to.eq_ignore_ascii_case(from) && table.styles.iter().any(|x| x.name.eq_ignore_ascii_case(&to)) {
+        return Err(bad("rename", format!("a plot style `{to}` already exists")));
+    }
+    let st = table.styles.iter_mut().find(|x| x.name.eq_ignore_ascii_case(from)).ok_or_else(|| bad("rename", format!("no plot style `{from}`")))?;
+    st.name = to.clone();
+    // References follow the new name, same as the linetype rename above.
+    let fix = |n: &mut String| {
+        if n.eq_ignore_ascii_case(from) {
+            *n = to.clone();
+        }
+    };
+    d.layers.iter_mut().for_each(|l| fix(&mut l.plot_style));
+    let users =
+        |st: &EntityStore| -> Vec<Handle> { st.iter().filter(|e| e.common.plot_style.eq_ignore_ascii_case(from)).map(|e| e.handle).collect() };
+    let mut hs = users(&d.model);
+    hs.extend(d.layouts.iter().flat_map(|l| users(&l.entities)));
+    for h in hs {
+        d.modify_entity(h, |e| fix(&mut e.common.plot_style))?;
+    }
+    for block in d.blocks.values_mut() {
+        let hs = users(&block.entities);
+        if !hs.is_empty() {
+            let b = Arc::make_mut(block);
+            for h in hs {
+                b.entities.modify(h, |e| fix(&mut e.common.plot_style));
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------------- -RENAME prompts ----------------
 
 /// Prompt keyword, `rename` table (None: not available yet), noun.
@@ -131,12 +184,12 @@ const TYPES: &[(&str, Option<&str>, &str)] = &[
     ("LType", Some("linetype"), "linetype"),
     ("Material", None, "material"),
     ("multileadeRstyle", Some("mleaderstyle"), "multileader style"),
-    ("Plotstyle", None, "plot style"),
+    ("Plotstyle", Some("plotstyle"), "plot style"),
     ("textStyle", Some("style"), "text style"),
     ("Tablestyle", Some("tablestyle"), "table style"),
     ("Ucs", Some("ucs"), "UCS"),
     ("VIew", Some("view"), "view"),
-    ("VPort", None, "viewport configuration"),
+    ("VPort", Some("vport"), "viewport configuration"),
 ];
 
 /// Keyword-only: spaces separate inputs.
@@ -159,6 +212,8 @@ fn exists(d: &Drawing, table: &str, name: &str) -> bool {
         "tablestyle" => any_named(d.table_styles.iter().map(|t| &t.name), name),
         "view" => any_named(d.views.iter().map(|t| &t.name), name),
         "ucs" => any_named(d.ucss.iter().map(|t| &t.name), name),
+        "vport" => any_named(d.vports.iter().map(|t| &t.name), name),
+        "plotstyle" => d.plot_style_tables.iter().any(|t| !t.is_color_dependent() && any_named(t.styles.iter().map(|x| &x.name), name)),
         _ => true,
     }
 }
