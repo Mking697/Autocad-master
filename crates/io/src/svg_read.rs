@@ -1,17 +1,17 @@
 //! SVG → Drawing: the static W3C SVG subset that drawing tools emit.
 //!
-//! Reads shapes (`rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`), `path`
-//! outlines (`M L H V C S Q T A Z`, absolute and relative), `g` grouping with `transform`
-//! attributes, `viewBox` and unit-bearing `width`/`height`, and Inkscape layers
-//! (`inkscape:groupmode="layer"`). Geometry becomes centre-line entities in millimetres with
-//! the page's top-left corner at the origin and Y pointing up — where a laser or pen job
-//! wants it.
+//! Reads shapes (`rect` — including rounded corners via `rx`/`ry` — `circle`, `ellipse`,
+//! `line`, `polyline`, `polygon`), `path` outlines (`M L H V C S Q T A Z`, absolute and
+//! relative), `g` grouping with `transform` attributes, `viewBox` and unit-bearing
+//! `width`/`height`, and Inkscape layers (`inkscape:groupmode="layer"`). Geometry becomes
+//! centre-line entities in millimetres with the page's top-left corner at the origin and Y
+//! pointing up — where a laser or pen job wants it.
 //!
 //! Not read (each is a follow-up): CSS class rules (`<style>`), `use` references, fills,
-//! gradients and hatch patterns, text, embedded raster images, rounded rectangle corners
-//! (`rx`/`ry`), and elliptical arcs under non-uniform transforms (those are flattened into
-//! line segments instead of losing the shape). What the drawing shows of those (all but fills,
-//! gradients and patterns) is named in a read note, so it is never left out silently.
+//! gradients and hatch patterns, text, embedded raster images, and elliptical arcs under
+//! non-uniform transforms (those are flattened into line segments instead of losing the
+//! shape). What the drawing shows of those (all but fills, gradients and patterns) is named
+//! in a read note, so it is never left out silently.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -146,7 +146,6 @@ enum LeftOut {
     Image,
     Use,
     Style,
-    RoundedCorners,
 }
 
 impl LeftOut {
@@ -165,7 +164,6 @@ impl LeftOut {
             Self::Image => ("raster image", "raster images"),
             Self::Use => ("`<use>` copy", "`<use>` copies"),
             Self::Style => ("`<style>` sheet (its class rules aren't applied)", "`<style>` sheets (their class rules aren't applied)"),
-            Self::RoundedCorners => ("rectangle with rounded corners (drawn square)", "rectangles with rounded corners (drawn square)"),
         };
         format!("{n} {}", if n == 1 { one } else { many })
     }
@@ -363,11 +361,24 @@ impl Parser {
         if w <= 0.0 || h <= 0.0 {
             return Ok(());
         }
-        if num(e, b"rx", 0.0) > 0.0 || num(e, b"ry", 0.0) > 0.0 {
-            self.left_out(LeftOut::RoundedCorners);
+        let (rx, ry) = rounded_rect_radii(e, w, h);
+        if rx <= 0.0 || ry <= 0.0 {
+            let pts = [Vec2::new(x, y), Vec2::new(x + w, y), Vec2::new(x + w, y + h), Vec2::new(x, y + h)];
+            return self.add_polyline(&pts.map(|p| self.map(p)), true);
         }
-        let pts = [Vec2::new(x, y), Vec2::new(x + w, y), Vec2::new(x + w, y + h), Vec2::new(x, y + h)];
-        self.add_polyline(&pts.map(|p| self.map(p)), true)
+        // Build the same outline the SVG spec defines for a rounded rect (corner arcs as
+        // `A rx ry 0 0 1 …`) and hand it to the path machinery already used for `<path>`
+        // elements, so bulge vertices and non-uniform-transform flattening both apply here too.
+        let (x0, x1, x2) = (x + rx, x + w - rx, x + w);
+        let (y0, y1, y2, y3) = (y, y + ry, y + h - ry, y + h);
+        let d = format!(
+            "M {x0} {y} H {x1} A {rx} {ry} 0 0 1 {x2} {y1} V {y2} A {rx} {ry} 0 0 1 {x1} {y3} \
+             H {x0} A {rx} {ry} 0 0 1 {x} {y2} V {y1} A {rx} {ry} 0 0 1 {x0} {y0} Z"
+        );
+        for sp in parse_path(&d)? {
+            self.emit_subpath(&sp)?;
+        }
+        Ok(())
     }
 
     fn circle(&mut self, e: &BytesStart) -> Result<()> {
@@ -587,6 +598,17 @@ fn attr(e: &BytesStart, name: &[u8]) -> Option<String> {
 
 fn num(e: &BytesStart, name: &[u8], fallback: f64) -> f64 {
     attr(e, name).as_deref().and_then(parse_length_mm).unwrap_or(fallback)
+}
+
+/// `rect` corner radii per the SVG spec: a missing `ry` takes `rx` and vice versa, a
+/// negative or non-finite value is treated as absent (0, i.e. square), and both are then
+/// clamped to half the rectangle's width/height.
+fn rounded_rect_radii(e: &BytesStart, w: f64, h: f64) -> (f64, f64) {
+    let raw_rx = attr(e, b"rx").as_deref().and_then(parse_length_mm);
+    let raw_ry = attr(e, b"ry").as_deref().and_then(parse_length_mm);
+    let rx = raw_rx.or(raw_ry).unwrap_or(0.0).max(0.0);
+    let ry = raw_ry.or(raw_rx).unwrap_or(0.0).max(0.0);
+    (rx.min(w / 2.0), ry.min(h / 2.0))
 }
 
 /// A bare number, or a number with an absolute CSS/SVG unit: millimetres here, everything

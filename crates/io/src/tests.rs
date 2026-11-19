@@ -2321,8 +2321,8 @@ fn svg_hidden_and_defs_subtrees_are_skipped() {
     assert_eq!(kinds(&d), ["Polyline"]);
 }
 
-/// #627: what the reader doesn't read yet (text, raster images, `<use>` copies, style sheets,
-/// rounded corners) is named in a read note instead of being left out silently; what isn't drawn
+/// #627: what the reader doesn't read yet (text, raster images, `<use>` copies, style sheets)
+/// is named in a read note instead of being left out silently; what isn't drawn
 /// (in `<defs>` or hidden) isn't counted.
 #[test]
 fn svg_left_out_content_is_noted() {
@@ -2330,14 +2330,14 @@ fn svg_left_out_content_is_noted() {
         "{SVG_PAGE}<defs><style>.a {{ stroke: red }}</style><text>in defs</text><rect id=\"r\" width=\"1\" height=\"1\"/></defs>\
          <text x=\"0\" y=\"5\">one</text><text x=\"0\" y=\"8\"><tspan>two</tspan></text><text display=\"none\">hidden</text>\
          <image href=\"a.png\" width=\"2\" height=\"2\"/><use href=\"#r\"/><use href=\"#r\" x=\"3\"></use>\
-         <rect x=\"1\" y=\"1\" width=\"4\" height=\"3\" rx=\"1\"/><rect x=\"6\" y=\"1\" width=\"4\" height=\"3\"/></svg>"
+         <rect x=\"6\" y=\"1\" width=\"4\" height=\"3\"/></svg>"
     );
     let d = read(svg.as_bytes(), "left-out.svg").unwrap();
-    assert_eq!(kinds(&d), ["Polyline", "Polyline"]);
+    assert_eq!(kinds(&d), ["Polyline"]);
     assert_eq!(
         d.read_notes,
         ["SVG: CADCraft doesn't read these yet, so they were left out: 2 texts, 1 raster image, 2 `<use>` copies, \
-          1 `<style>` sheet (its class rules aren't applied), 1 rectangle with rounded corners (drawn square)"]
+          1 `<style>` sheet (its class rules aren't applied)"]
     );
     let plain = read(format!("{SVG_PAGE}<rect x=\"1\" y=\"1\" width=\"4\" height=\"3\"/></svg>").as_bytes(), "a.svg").unwrap();
     assert!(plain.read_notes.is_empty(), "{:?}", plain.read_notes);
@@ -2350,6 +2350,46 @@ fn svgz_gunzips_to_the_same_drawing() {
     let packed = read(&gzip_of(svg.as_bytes()), "a.svgz").unwrap();
     assert_eq!(kinds(&plain), kinds(&packed));
     assert_eq!(plain.model.iter().map(|e| &e.kind).collect::<Vec<_>>(), packed.model.iter().map(|e| &e.kind).collect::<Vec<_>>());
+}
+
+/// FF14: equal `rx`/`ry` on a `<rect>` becomes a closed polyline with bulge vertices at the
+/// four rounded corners — quarter circles, not the square outline it used to draw.
+#[test]
+fn svg_rect_with_equal_rx_ry_is_rounded() {
+    let svg = format!("{SVG_PAGE}<rect x=\"2\" y=\"2\" width=\"10\" height=\"4\" rx=\"1\" ry=\"1\"/></svg>");
+    let d = read(svg.as_bytes(), "rounded.svg").unwrap();
+    let r = first(&d, |k| if let EntityKind::LwPolyline(p) = k { Some(p.clone()) } else { None });
+    assert!(r.closed, "{r:?}");
+    let bulges: Vec<f64> = r.vertices.iter().map(|v| v.bulge).collect();
+    let corner_bulges = bulges.iter().filter(|b| b.abs() > 1e-6).count();
+    assert_eq!(corner_bulges, 4, "expected one bulge vertex per rounded corner: {bulges:?}");
+    for b in bulges.iter().filter(|b| b.abs() > 1e-6) {
+        // A 90° corner arc has bulge tan(θ/4) = tan(22.5°).
+        assert!((b.abs() - (std::f64::consts::FRAC_PI_8).tan()).abs() < 1e-6, "{bulges:?}");
+    }
+}
+
+/// FF14: hostile `rx`/`ry` (negative, non-finite, or far larger than the rectangle) never
+/// panics and always yields a sane closed outline.
+#[test]
+fn svg_rect_hostile_rx_ry_does_not_panic() {
+    for attrs in [
+        r#"rx="-5" ry="-5""#,
+        r#"rx="NaN" ry="NaN""#,
+        r#"rx="Infinity" ry="Infinity""#,
+        r#"rx="1000""#,
+        r#"ry="1000""#,
+        r#"rx="0" ry="3""#,
+        r#"rx="3" ry="0""#,
+    ] {
+        let svg = format!("{SVG_PAGE}<rect x=\"1\" y=\"1\" width=\"4\" height=\"3\" {attrs}/></svg>");
+        let d = read(svg.as_bytes(), "hostile.svg").unwrap();
+        let r = first(&d, |k| if let EntityKind::LwPolyline(p) = k { Some(p.clone()) } else { None });
+        assert!(r.closed && r.vertices.len() >= 4, "{attrs}: {r:?}");
+        for v in &r.vertices {
+            assert!(v.p.x.is_finite() && v.p.y.is_finite() && v.bulge.is_finite(), "{attrs}: {v:?}");
+        }
+    }
 }
 
 #[test]
