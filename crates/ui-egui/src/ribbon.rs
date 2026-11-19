@@ -72,12 +72,16 @@ fn ribbon_button(ui: &mut egui::Ui, icon: Icon, label: &str, w: f32, h: f32) -> 
     resp.on_hover_text(crate::i18n::t(label))
 }
 
-/// Tab strip and, for the active tab, its panel row; 26 px tabs over a ~90 px panel band like
-/// AutoCAD's own Ribbon. Height is fixed so docking below it never jitters.
+/// Tab strip and, for the active tab, its panel row; 26 px tabs over a panel band like AutoCAD's
+/// own Ribbon. Height is fixed so docking below it never jitters.
 pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     let tab_h = 26.0;
-    let panel_h = 92.0;
+    // The band below each panel's buttons that names it (AutoCAD's own "Draw ▾" style footer),
+    // separated from the buttons by a rule so it doesn't read as crowded extra button text.
+    let name_h = 20.0;
+    let panel_h = 104.0;
+    let button_h = panel_h - name_h - 10.0;
     egui::Panel::top("cc_ribbon").exact_size(tab_h + panel_h).frame(egui::Frame::NONE.fill(t.chrome)).show(ui, |ui| {
         let r = ui.max_rect();
         let p = ui.painter().clone();
@@ -116,19 +120,23 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                                 ui.painter().vline(sr.center().x, sr.y_range(), Stroke::new(1.0, t.border));
                                 ui.add_space(6.0);
                             }
-                            let panel_w = (tools.len() as f32 * 52.0 - 2.0).max(40.0);
-                            ui.allocate_ui_with_layout(vec2(panel_w, panel_h - 12.0), egui::Layout::top_down(egui::Align::Center), |ui| {
+                            let panel_w = (tools.len() as f32 * 52.0 - 2.0).max(44.0);
+                            ui.allocate_ui_with_layout(vec2(panel_w, panel_h - 4.0), egui::Layout::top_down(egui::Align::Center), |ui| {
                                 ui.add_space(4.0);
                                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(false), |ui| {
                                     ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
                                     for (icon, cmd, tip) in &tools {
-                                        if ribbon_button(ui, *icon, tip, 50.0, panel_h - 20.0).clicked() {
+                                        if ribbon_button(ui, *icon, tip, 50.0, button_h).clicked() {
                                             clicked = Some(*cmd);
                                         }
                                     }
                                 });
+                                // A rule, then the panel's own name, clearly below the buttons'
+                                // own labels rather than crowding them (#U12, round 3).
+                                let (rr, _) = ui.allocate_exact_size(vec2(panel_w * 0.85, 1.0), Sense::hover());
+                                ui.painter().hline(rr.x_range(), rr.center().y, Stroke::new(1.0, t.border.gamma_multiply(0.7)));
                                 ui.add_space(2.0);
-                                ui.label(egui::RichText::new(crate::i18n::t(name)).color(t.text_dim).small());
+                                ui.label(egui::RichText::new(crate::i18n::t(name)).color(t.text_dim).size(11.5));
                             });
                         }
                     } else {
