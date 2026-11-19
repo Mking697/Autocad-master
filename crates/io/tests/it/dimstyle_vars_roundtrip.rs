@@ -111,6 +111,23 @@ fn new_variables_roundtrip_as_dimension_overrides() {
 }
 
 #[test]
+fn alt_tolerance_vars_roundtrip_as_dimstyle_groups() {
+    let mut d = drawing();
+    d.dim_styles[0].name = "Detail".into();
+    d.dim_styles.push(DimStyle { name: "AltTol".into(), alt_tol_decimals: 3, alt_tol_zero_suppression: 8, ..DimStyle::default() });
+    let text = write_dxf(&d);
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let rec = lines.windows(2).position(|w| w == ["2", "AltTol"]).unwrap();
+    let end = lines[rec..].windows(2).position(|w| w == ["0", "DIMSTYLE"] || w == ["0", "ENDTAB"]).map_or(lines.len(), |e| rec + e);
+    let rec = &lines[rec..end];
+    assert!(rec.windows(2).any(|w| w == ["274", "3"]), "DIMALTTD as a plain group: {rec:?}");
+    assert!(rec.windows(2).any(|w| w == ["286", "8"]), "DIMALTTZ as a plain group: {rec:?}");
+    let back = read_dxf(text.as_bytes()).unwrap();
+    let st = back.dim_style("AltTol").unwrap();
+    assert_eq!((st.alt_tol_decimals, st.alt_tol_zero_suppression), (3, 8));
+}
+
+#[test]
 fn header_jog_angle_is_read_in_degrees_and_hostile_values_are_dropped() {
     let d = drawing();
     let text = write_dxf(&d).replacen("HEADER\r\n", "HEADER\r\n  9\r\n$DIMJOGANG\r\n 40\r\n0.7853981633974483\r\n", 1);

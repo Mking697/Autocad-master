@@ -219,6 +219,10 @@ pub struct DimStyle {
     pub tol_scale: f64,
     /// DIMTZIN zero suppression of tolerance values (DIMZIN bits).
     pub tol_zero_suppression: u8,
+    /// DIMALTTD alternate units tolerance decimal places.
+    pub alt_tol_decimals: u8,
+    /// DIMALTTZ zero suppression of alternate units tolerance values (DIMZIN bits).
+    pub alt_tol_zero_suppression: u8,
     /// DIMALT alternate units, DIMALTF factor, DIMALTD decimals, DIMAPOST template.
     pub alt: bool,
     pub alt_factor: f64,
@@ -321,6 +325,8 @@ pub const DIMVARS: &[(&str, &str)] = &[
     ("DIMTDEC", "tolDecimals"),
     ("DIMTFAC", "tolScale"),
     ("DIMTZIN", "tolZeroSuppression"),
+    ("DIMALTTD", "altTolDecimals"),
+    ("DIMALTTZ", "altTolZeroSuppression"),
     ("DIMALT", "alt"),
     ("DIMALTF", "altFactor"),
     ("DIMALTD", "altDecimals"),
@@ -397,6 +403,8 @@ impl Default for DimStyle {
             tol_decimals: 4,
             tol_scale: 1.0,
             tol_zero_suppression: 0,
+            alt_tol_decimals: 2,
+            alt_tol_zero_suppression: 0,
             alt: false,
             alt_factor: 25.4,
             alt_decimals: 2,

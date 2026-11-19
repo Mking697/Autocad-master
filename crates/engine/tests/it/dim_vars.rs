@@ -62,6 +62,8 @@ fn new_variables_are_style_overrides_and_read_back() {
         ("DIMFXL", json!(0.5)),
         ("DIMJOGANG", json!(60)),
         ("DIMSD1", json!(1)),
+        ("DIMALTTD", json!(3)),
+        ("DIMALTTZ", json!(8)),
     ] {
         set(&mut s, name, v);
     }
@@ -74,6 +76,8 @@ fn new_variables_are_style_overrides_and_read_back() {
     assert_eq!(o.get("extLineweight"), Some(&json!(-1)));
     assert_eq!(o.get("jogAngle"), Some(&json!(60.0)));
     assert_eq!(o.get("suppressDim1"), Some(&json!(true)));
+    assert_eq!(o.get("altTolDecimals"), Some(&json!(3)));
+    assert_eq!(o.get("altTolZeroSuppression"), Some(&json!(8)));
     // A new dimension takes the overrides.
     linear(&mut s, 10.0);
     let (dm, _) = last_dim(&s);

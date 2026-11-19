@@ -112,6 +112,8 @@ pub(crate) const DIM_CODES: &[(&str, i32, K)] = &[
     ("textJust", 280, K::Int),
     ("tolZeroSuppression", 284, K::Int),
     ("altZeroSuppression", 285, K::Int),
+    ("altTolDecimals", 274, K::Int),
+    ("altTolZeroSuppression", 286, K::Int),
     ("textStyle", 340, K::TextStyle),
     ("arrowBlock", 342, K::Block),
     ("arrowBlock1", 343, K::Block),

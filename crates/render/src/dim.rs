@@ -400,21 +400,7 @@ fn linear_text(meas: f64, d: &Dimension, st: &DimStyle, prefix: &str) -> String 
     };
     let mut s = post(&st.post, &main);
     if st.tolerance && !st.limits {
-        let tf = NumFormat { decimals: st.tol_decimals, zin: st.tol_zero_suppression, round: 0.0, ..nf.clone() };
-        // DIMPOST's suffix (what follows `<>`, or all of it) also goes on the tolerance values.
-        let suffix = st.post.split_once("<>").map_or(st.post.as_str(), |(_, after)| after);
-        if (st.tol_plus - st.tol_minus).abs() < 1e-12 {
-            s += &format!("%%p{}{suffix}", format_linear(st.tol_plus, &tf).1);
-        } else {
-            let plus = format_linear(st.tol_plus, &tf).1 + suffix;
-            let minus = format_linear(st.tol_minus, &tf).1 + suffix;
-            let sign = |x: &str, pos: char| if x.trim_start_matches(['0', '.', ',']).is_empty() { x.to_string() } else { format!("{pos}{x}") };
-            let (plus, minus) =
-                (sign(&plus, '+'), if st.tol_minus < 0.0 { format!("+{}", minus.trim_start_matches('-')) } else { sign(&minus, '-') });
-            // DIMTOLJ: bottom / middle / top (MTEXT `\A`; middle is the default).
-            let tolj = if st.tol_just == 1 { String::new() } else { format!("\\A{};", st.tol_just.min(2)) };
-            s += &format!("{{\\H{};{tolj}\\S{plus}^{minus};}}", tol_height_code(st));
-        }
+        s += &tolerance_suffix(st, st.tol_plus, st.tol_minus, st.tol_decimals, st.tol_zero_suppression, &st.post);
     }
     if st.alt {
         // DIMALTU 6 and 7 are architectural and fractional without stacking, 8 is decimal.
@@ -426,7 +412,18 @@ fn linear_text(meas: f64, d: &Dimension, st: &DimStyle, prefix: &str) -> String 
         };
         let af = NumFormat { unit, decimals: st.alt_decimals, zin: st.alt_zero_suppression, round: st.alt_round, frac, ..nf };
         let alt = format_linear(v * st.alt_factor, &af).1;
-        s += &format!(" [{}]", post(&st.alt_post, &alt));
+        let mut alt = post(&st.alt_post, &alt);
+        if st.tolerance && !st.limits {
+            alt += &tolerance_suffix(
+                st,
+                st.tol_plus * st.alt_factor,
+                st.tol_minus * st.alt_factor,
+                st.alt_tol_decimals,
+                st.alt_tol_zero_suppression,
+                &st.alt_post,
+            );
+        }
+        s += &format!(" [{alt}]");
     }
     inspected(apply_override(&s, d), d)
 }
@@ -437,6 +434,26 @@ fn inspected(value: String, d: &Dimension) -> String {
         Some(ins) => [ins.label.as_str(), value.as_str(), ins.rate.as_str()].iter().filter(|p| !p.is_empty()).copied().collect::<Vec<_>>().join("  "),
         None => value,
     }
+}
+
+/// The `±` (or stacked `+`/`-`) tolerance text DIMTOL adds after a value: `decimals`/`zin` pick
+/// the tolerance's own decimal places and zero suppression (DIMTDEC/DIMTZIN for the main value,
+/// DIMALTTD/DIMALTTZ for the alternate one in brackets); `post` is the main or alternate DIMPOST
+/// template, whose suffix (what follows `<>`, or all of it) also goes on the tolerance values.
+fn tolerance_suffix(st: &DimStyle, plus: f64, minus: f64, decimals: u8, zin: u8, post: &str) -> String {
+    let nf = NumFormat::from_style(st);
+    let tf = NumFormat { decimals, zin, round: 0.0, ..nf };
+    let suffix = post.split_once("<>").map_or(post, |(_, after)| after);
+    if (plus - minus).abs() < 1e-12 {
+        return format!("%%p{}{suffix}", format_linear(plus, &tf).1);
+    }
+    let p = format_linear(plus, &tf).1 + suffix;
+    let m = format_linear(minus, &tf).1 + suffix;
+    let sign = |x: &str, pos: char| if x.trim_start_matches(['0', '.', ',']).is_empty() { x.to_string() } else { format!("{pos}{x}") };
+    let (p, m) = (sign(&p, '+'), if minus < 0.0 { format!("+{}", m.trim_start_matches('-')) } else { sign(&m, '-') });
+    // DIMTOLJ: bottom / middle / top (MTEXT `\A`; middle is the default).
+    let tolj = if st.tol_just == 1 { String::new() } else { format!("\\A{};", st.tol_just.min(2)) };
+    format!("{{\\H{};{tolj}\\S{p}^{m};}}", tol_height_code(st))
 }
 
 /// `\H` code for stacked tolerance parts (DIMTFAC relative to the 70% stack scale).
@@ -1360,6 +1377,52 @@ mod tests {
             1.0,
         );
         assert_eq!(lim.value, "10.1/9.8");
+    }
+
+    /// DIMALTTD/DIMALTTZ format the alternate (bracketed) value's own tolerance independently
+    /// of DIMTDEC/DIMTZIN, which only govern the main value's tolerance (#F7).
+    #[test]
+    fn alternate_units_tolerance_uses_dimalttd_and_dimalttz() {
+        let d = lin((0.0, 0.0), (10.0, 0.0), (0.0, 5.0), 0.0);
+        let sym = dimension_geometry(
+            &d,
+            &st_with(|s| {
+                s.tolerance = true;
+                s.tol_plus = 0.05;
+                s.tol_minus = 0.05;
+                s.decimals = 2;
+                s.tol_decimals = 2;
+                s.alt = true;
+                s.alt_factor = 25.4;
+                s.alt_decimals = 1;
+                s.alt_tol_decimals = 3;
+            }),
+            1.0,
+        );
+        // Main: ±0.05 at 2 decimals (DIMTDEC); alternate: ±1.270 at 3 decimals (DIMALTTD),
+        // 0.05 * 25.4 = 1.27, scaled with the main tolerance, not DIMALTD's 1 decimal.
+        assert_eq!(sym.value, "10.00±0.05 [254.0±1.270]");
+        let dev = dimension_geometry(
+            &d,
+            &st_with(|s| {
+                s.tolerance = true;
+                s.tol_plus = 0.1;
+                s.tol_minus = 0.2;
+                s.decimals = 1;
+                s.tol_decimals = 1;
+                s.alt = true;
+                s.alt_factor = 2.0;
+                s.alt_decimals = 1;
+                s.alt_tol_decimals = 2;
+                s.alt_tol_zero_suppression = 0;
+            }),
+            1.0,
+        );
+        assert_eq!(dev.value, "10.0+0.1/-0.2 [20.0+0.20/-0.40]");
+        assert!(dev.mtext.contains("\\S+0.1^-0.2;") && dev.mtext.contains("\\S+0.20^-0.40;"));
+        // Plain alt (no DIMTOL) carries no tolerance at all.
+        let plain = dimension_geometry(&d, &st_with(|s| s.alt = true), 1.0);
+        assert!(!plain.value.contains('±') && !plain.value.contains('+'));
     }
 
     #[test]
