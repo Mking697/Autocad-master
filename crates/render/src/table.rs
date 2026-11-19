@@ -41,6 +41,9 @@ pub struct TableText {
     pub color: Color,
     pub style: String,
     pub text: String,
+    /// Width available for the text to wrap into (the cell's span, minus its horizontal
+    /// margins); 0: no wrapping (the column, or its margin, leaves no room to measure).
+    pub wrap_width: f64,
 }
 
 /// Everything a table draws, in world coordinates.
@@ -186,24 +189,58 @@ fn part_table(t: &Table, rows: &[usize], origin: Vec2) -> Table {
     }
 }
 
+/// Width left for a cell's text to wrap into: its span, minus the margin on both sides. Zero (a
+/// zero-width column, or a margin that already consumes the span) means "don't wrap", the same
+/// convention `MTextParams::width` uses, so an overflowing cell still draws as one line.
+fn wrap_width(col_w: f64, margin_h: f64) -> f64 {
+    let m = if margin_h.is_finite() && margin_h > 0.0 { margin_h } else { 0.0 };
+    let w = col_w - 2.0 * m;
+    if w.is_finite() && w > 0.0 { w } else { 0.0 }
+}
+
+/// The text block height a cell's (wrapped) text needs, plus its vertical margins. Degenerate
+/// input (no text, a non-positive height, or a width too narrow to measure) falls back to the
+/// cell style's own text height so the row never shrinks below one line.
+fn wrapped_cell_height(d: &Drawing, cs: &CellStyle, text: &str, height: f64, width: f64) -> f64 {
+    let h = if height.is_finite() && height > 0.0 { height } else { cs.text_height.max(0.0) };
+    if text.is_empty() || !(h.is_finite() && h > 0.0) {
+        return 0.0;
+    }
+    let ts = crate::text_style(d, &cs.text_style);
+    let mp = cadcraft_fonts::MTextParams {
+        attach: 1,
+        font: cadcraft_fonts::TextFont::resolve(&ts.font),
+        width_factor: ts.width_factor,
+        oblique: ts.oblique,
+        width,
+        ..cadcraft_fonts::MTextParams::new(Vec2::ZERO, h)
+    };
+    let text_h = cadcraft_fonts::layout_mtext_with(text, &mp).bounds.height();
+    let text_h = if text_h.is_finite() && text_h > 0.0 { text_h } else { h };
+    let margin_v = if cs.margin_v.is_finite() && cs.margin_v > 0.0 { cs.margin_v } else { 0.0 };
+    text_h + 2.0 * margin_v
+}
+
 /// Lay out one part.
 fn layout(d: &Drawing, t: &Table) -> TableGeom {
     let st = table_style_of(d, t);
     let rows = t.row_heights.len().min(10_000);
     let cols = t.col_widths.len().min(10_000);
     let xs = edges(&t.col_widths, cols);
-    let ys = edges(&t.row_heights, rows);
     let o = t.insert.xy();
     let p = |x: f64, y: f64| o + Vec2::new(x, -y);
     let x_at = |c: usize| xs.get(c).copied().unwrap_or(0.0);
-    let y_at = |r: usize| ys.get(r).copied().unwrap_or(0.0);
     let mut g = TableGeom::default();
     if rows == 0 || cols == 0 {
         return g;
     }
     let cov = coverage(t);
     if rows.saturating_mul(cols) > MAX_LAYOUT_CELLS || cov.is_err() {
-        let (w, h) = (x_at(cols), y_at(rows));
+        // Row heights are not grown in the outline fallback (no cell text is measured here
+        // either), so the original heights are still the right bound for the outline box.
+        let ys_fallback = edges(&t.row_heights, rows);
+        let y_at_fallback = |r: usize| ys_fallback.get(r).copied().unwrap_or(0.0);
+        let (w, h) = (x_at(cols), y_at_fallback(rows));
         let corners = [p(0.0, 0.0), p(w, 0.0), p(w, h), p(0.0, h), p(0.0, 0.0)];
         for s in corners.windows(2) {
             if let [a, b] = s {
@@ -259,6 +296,27 @@ fn layout(d: &Drawing, t: &Table) -> TableGeom {
     let own = |r: usize, c: usize| owner.get(r * cols + c).copied().filter(|x| *x != usize::MAX);
     let style_of = |a: Option<usize>| a.and_then(|a| anchors.get(a)).and_then(|a| styles.get(a.style));
     let same_style = |a: Option<usize>, b: Option<usize>| matches!((a.and_then(|a| anchors.get(a)), b.and_then(|b| anchors.get(b))), (Some(x), Some(y)) if x.style == y.style);
+    // Row heights grow to fit wrapped text: a single-row cell whose text needs more room than
+    // its nominal row (once wrapped to the column width) grows that row. Cells spanning several
+    // rows are left as declared — distributing growth across a merge is ambiguous, and the merge
+    // already has more room than a single row.
+    let mut row_h: Vec<f64> = (0..rows).map(|r| t.row_heights.get(r).copied().unwrap_or(0.0)).collect();
+    for a in &anchors {
+        if a.rows != 1 {
+            continue;
+        }
+        let Some(cell) = t.cells.get(a.row).and_then(|row| row.get(a.col)).filter(|c| !c.text.is_empty()) else { continue };
+        let Some(cs) = styles.get(a.style) else { continue };
+        let col_w = x_at(a.col + a.cols) - x_at(a.col);
+        let width = wrap_width(col_w, cs.margin_h);
+        let height = cell.text_height.filter(|h| h.is_finite() && *h > 0.0).map_or(cs.text_height, |h| h * k);
+        let needed = wrapped_cell_height(d, cs, &cell.text, height, width);
+        if let Some(h) = row_h.get_mut(a.row).filter(|_| needed.is_finite() && needed > 0.0) {
+            *h = h.max(needed);
+        }
+    }
+    let ys = edges(&row_h, rows);
+    let y_at = |r: usize| ys.get(r).copied().unwrap_or(0.0);
     // Fills first, under the borders and texts.
     for a in &anchors {
         let Some(cs) = styles.get(a.style) else { continue };
@@ -340,6 +398,7 @@ fn layout(d: &Drawing, t: &Table) -> TableGeom {
             color: cs.text_color,
             style: cs.text_style.clone(),
             text: cell.text.clone(),
+            wrap_width: wrap_width(x1 - x0, cs.margin_h),
         });
     }
     g
@@ -377,12 +436,14 @@ pub(crate) fn draw(b: &mut Builder, ctx: &Ctx, t: &Table, rgb: Ink, lw: f32) {
         let ts = crate::text_style(ctx.d, &tx.style);
         let font = cadcraft_fonts::TextFont::resolve(&ts.font);
         // Cell content is MTEXT (`\P`, `{\Q15;…}`, `\F…;`): laid out as such, at the cell's
-        // alignment point (its numbering is MTEXT's attachment).
+        // alignment point (its numbering is MTEXT's attachment), wrapped to the room its column
+        // leaves inside the cell's margins.
         let mp = cadcraft_fonts::MTextParams {
             attach: tx.attach,
             font,
             width_factor: ts.width_factor,
             oblique: ts.oblique,
+            width: tx.wrap_width,
             ..cadcraft_fonts::MTextParams::new(tx.at, tx.height)
         };
         let layout = cadcraft_fonts::layout_mtext_with(&tx.text, &mp);

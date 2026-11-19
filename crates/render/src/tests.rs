@@ -906,6 +906,69 @@ fn table_cell_text_height_scales_with_the_table() {
     assert_eq!(height(2.0, None), Some(base * 2.0));
 }
 
+/// A cell string too wide for its column wraps at word boundaries, and the row it's in grows
+/// to fit the wrapped lines rather than letting the text overflow into the row below.
+#[test]
+fn table_cell_long_text_wraps_and_grows_the_row() {
+    let d = Drawing::new_imperial();
+    let cell = |t: &str| cadcraft_doc::TableCell { text: t.into(), ..Default::default() };
+    let long = "alpha beta gamma delta epsilon zeta eta theta iota kappa".to_string();
+    let t = cadcraft_doc::Table {
+        col_widths: vec![2.0],
+        row_heights: vec![1.0, 1.0],
+        cells: vec![vec![cell(&long)], vec![cell("x")]],
+        text_height: 0.2,
+        ..Default::default()
+    };
+    let g = crate::table_geometry(&d, &t);
+    // Its cell reports room to wrap into, and the wrapped text indeed became several lines.
+    let text = g.texts.iter().find(|x| x.row == 0).expect("row 0 text geometry");
+    assert!(text.wrap_width > 0.0);
+    let mp = cadcraft_fonts::MTextParams { width: text.wrap_width, ..cadcraft_fonts::MTextParams::new(cadcraft_geom::Vec2::ZERO, text.height) };
+    let wrapped = cadcraft_fonts::layout_mtext_with(&text.text, &mp);
+    assert!(wrapped.lines.len() > 1, "expected the long cell text to wrap onto multiple lines");
+    // The horizontal border between row 0 and row 1 moved down past the nominal 1.0 height to
+    // make room for the extra lines, instead of row 0's text overflowing into row 1.
+    let mut boundaries: Vec<f64> = g.lines.iter().filter(|l| (l.a.y - l.b.y).abs() < 1e-9 && l.a.y.abs() > 1e-9).map(|l| l.a.y.abs()).collect();
+    boundaries.sort_by(f64::total_cmp);
+    boundaries.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    let row0_bottom = boundaries.first().copied().unwrap_or(0.0);
+    assert!(row0_bottom > 1.0 + 1e-6, "row 0 should have grown past its nominal 1.0 height, got {row0_bottom}");
+}
+
+/// Degenerate cell/column combinations lay out without panicking: a zero-width column (no room
+/// to measure a wrap width), a single word far wider than its column, and empty cell text.
+#[test]
+fn table_cell_wrap_handles_degenerate_input_without_panicking() {
+    let d = Drawing::new_imperial();
+    let cell = |t: &str| cadcraft_doc::TableCell { text: t.into(), ..Default::default() };
+
+    let zero_width = cadcraft_doc::Table {
+        col_widths: vec![0.0],
+        row_heights: vec![1.0],
+        cells: vec![vec![cell("a very long cell value that would otherwise need wrapping")]],
+        text_height: 0.2,
+        ..Default::default()
+    };
+    let g = crate::table_geometry(&d, &zero_width);
+    assert_eq!(g.texts.len(), 1);
+    assert_eq!(g.texts[0].wrap_width, 0.0);
+
+    let word_wider_than_column = cadcraft_doc::Table {
+        col_widths: vec![0.2],
+        row_heights: vec![1.0],
+        cells: vec![vec![cell("supercalifragilisticexpialidocious")]],
+        text_height: 0.2,
+        ..Default::default()
+    };
+    let g2 = crate::table_geometry(&d, &word_wider_than_column);
+    assert_eq!(g2.texts.len(), 1);
+
+    let empty_text = cadcraft_doc::Table { col_widths: vec![1.0], row_heights: vec![1.0], cells: vec![vec![cell("")]], ..Default::default() };
+    let g3 = crate::table_geometry(&d, &empty_text);
+    assert!(g3.texts.is_empty());
+}
+
 #[test]
 fn cancelled_build_stops_early() {
     use std::sync::Arc;
