@@ -36,7 +36,9 @@ pub fn specs() -> Vec<CommandSpec> {
             .params("{name?: \"G1\" | \"G1,G2\" | [names]} | {handles?} (default the selection: every group holding one of the objects) → {ungrouped: [names]}")
             .interactive(|_| Ok(Box::new(UngroupM::default()))),
         CommandSpec::new("groupedit", "Group Edit", run_groupedit)
-            .params("{name, add?: [handles], remove?: [handles], rename?: new name} → {name, members}. Removing every member deletes the group.")
+            .params(
+                "{name, add?: [handles], remove?: [handles], rename?: new name, description?, selectable?: bool} → {name, members}. Removing every member deletes the group.",
+            )
             .interactive(|_| Ok(Box::new(GroupEditM::default()))),
         CommandSpec::new("groups.list", "List Groups", run_list)
             .params("{} → {groups: [{name, description, selectable, unnamed, members: [handles]}]}")
@@ -211,6 +213,22 @@ pub(crate) fn rename(s: &mut Session, i: usize, new: &str) -> Result<()> {
     Ok(())
 }
 
+/// Set the description of the group at `i` (GROUPEDIT `description`, the dialog's Description field).
+pub(crate) fn set_description(s: &mut Session, i: usize, description: &str) -> Result<()> {
+    if let Some(g) = s.doc_mut()?.groups.get_mut(i) {
+        g.description = description.to_string();
+    }
+    Ok(())
+}
+
+/// Set whether the group at `i` is selectable as a whole (GROUPEDIT `selectable`, PICKSTYLE bit 1).
+pub(crate) fn set_selectable(s: &mut Session, i: usize, selectable: bool) -> Result<()> {
+    if let Some(g) = s.doc_mut()?.groups.get_mut(i) {
+        g.selectable = selectable;
+    }
+    Ok(())
+}
+
 /// One line per group for `?`: name, description, members.
 fn list_lines(d: &Drawing) -> Vec<String> {
     if d.groups.is_empty() {
@@ -333,6 +351,13 @@ fn run_groupedit(s: &mut Session, p: &Value) -> Result<Value> {
     let (_, deleted) = remove_members(s, i, &remove)?;
     if deleted {
         return Ok(json!({ "name": name, "members": 0, "deleted": true }));
+    }
+    if let Some(desc) = str_param(p, "description") {
+        set_description(s, i, desc)?;
+    }
+    if let Some(sel) = p.get("selectable") {
+        let sel = sel.as_bool().ok_or_else(|| bad("groupedit", "`selectable` must be a boolean"))?;
+        set_selectable(s, i, sel)?;
     }
     if let Some(n) = new_name {
         rename(s, i, n)?;
@@ -778,5 +803,20 @@ mod tests {
         // Copy the entity that isn't in any group: no group work at all, no panic.
         s.execute("copy", &json!({ "handles": [hs[2].hex()], "delta": [1, 0] })).unwrap();
         assert_eq!(s.doc().unwrap().groups.len(), 1);
+    }
+
+    #[test]
+    fn groupedit_json_sets_description_and_selectable() {
+        let mut s = session();
+        let hs = model_handles(&s);
+        create(&mut s, Some("G1"), "orig", &hs[..2], true).unwrap();
+        let r = s.execute("groupedit", &json!({ "name": "G1", "description": "new description", "selectable": false })).unwrap();
+        assert_eq!(r["name"], json!("G1"));
+        let g = s.doc().unwrap().groups.iter().find(|g| g.name == "G1").unwrap();
+        assert_eq!(g.description, "new description");
+        assert!(!g.selectable);
+        s.execute("groupedit", &json!({ "name": "G1", "selectable": true })).unwrap();
+        assert!(s.doc().unwrap().groups.iter().find(|g| g.name == "G1").unwrap().selectable);
+        assert!(s.execute("groupedit", &json!({ "name": "G1", "selectable": "not a bool" })).is_err());
     }
 }

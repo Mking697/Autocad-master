@@ -21,6 +21,7 @@ pub mod doc_path;
 mod finite;
 pub mod grip_dims;
 pub mod grips;
+pub mod group_display;
 mod guard;
 pub mod lisp;
 pub mod mtext_edit;
@@ -414,6 +415,10 @@ pub struct Settings {
     /// PICKSTYLE: bit 1 picks whole selectable groups ([`cmd::groups`]), bit 2 associative hatches
     /// with their boundaries (stored, not used yet).
     pub pickstyle: u8,
+    /// GROUPDISPLAYMODE: how a group selection shows grips ([`group_display`]). 0 grips on
+    /// every member (no special group display), 1 a single grip at the group's centroid, 2
+    /// (the default) the group's bounding box plus that centroid grip.
+    pub groupdisplaymode: u8,
     pub gripsize: f64,
     pub cursorsize: f64,
     /// MAXARRAY: the most objects one array command creates (items × selected objects).
@@ -504,6 +509,7 @@ impl Default for Settings {
             pickadd: true,
             pickdrag: true,
             pickstyle: 1,
+            groupdisplaymode: 2,
             gripsize: 5.0,
             cursorsize: 5.0,
             maxarray: 100_000,

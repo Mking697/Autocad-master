@@ -1943,28 +1943,57 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         && let Ok(st) = app.session.state()
     {
         let gs = app.session.settings.gripsize as f32;
-        for h in sel.iter().take(200) {
-            if let Some(e) = st.doc.entity(*h) {
-                let grips = e.kind.grips();
-                let count = grips.len();
-                for (gi, g) in grips.into_iter().enumerate() {
-                    let sp = xf.to_screen(g);
-                    if rect.contains(sp) {
-                        let r = grip_rect(&e.kind, count, gi, sp, gs);
-                        let hot = app.canvas.hot_grips.contains(&(*h, gi));
-                        let warm = !hot && hover_pos.is_some_and(|hp| r.expand(2.0).contains(hp));
-                        painter.rect_filled(
-                            r,
-                            0.0,
-                            if hot {
-                                t.grip_hot
-                            } else if warm {
-                                Color32::from_rgb(0xff, 0x7f, 0x9f)
-                            } else {
-                                t.grip
-                            },
-                        );
-                        painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_rgb(0x10, 0x30, 0x80)), egui::StrokeKind::Middle);
+        // GROUPDISPLAYMODE: a selection that is exactly one whole, selectable group shows its
+        // bounding box and/or a single centroid grip instead of every member's own grips.
+        let group_display = app.session.group_display(&sel);
+        if let Some(b) = group_display.as_ref().and_then(|gd| gd.bounds) {
+            let a = xf.to_screen(b.min);
+            let c = xf.to_screen(b.max);
+            painter.rect_stroke(Rect::from_two_pos(a, c), 0.0, Stroke::new(1.0, t.grip), egui::StrokeKind::Middle);
+        }
+        if let Some(center) = group_display.as_ref().and_then(|gd| gd.grip) {
+            let sp = xf.to_screen(center);
+            if rect.contains(sp) {
+                let r = Rect::from_center_size(sp, egui::vec2(gs, gs));
+                let hot = app.canvas.hot_grips.iter().any(|(h, _)| sel.contains(h));
+                let warm = !hot && hover_pos.is_some_and(|hp| r.expand(2.0).contains(hp));
+                painter.rect_filled(
+                    r,
+                    0.0,
+                    if hot {
+                        t.grip_hot
+                    } else if warm {
+                        Color32::from_rgb(0xff, 0x7f, 0x9f)
+                    } else {
+                        t.grip
+                    },
+                );
+                painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_rgb(0x10, 0x30, 0x80)), egui::StrokeKind::Middle);
+            }
+        } else {
+            for h in sel.iter().take(200) {
+                if let Some(e) = st.doc.entity(*h) {
+                    let grips = e.kind.grips();
+                    let count = grips.len();
+                    for (gi, g) in grips.into_iter().enumerate() {
+                        let sp = xf.to_screen(g);
+                        if rect.contains(sp) {
+                            let r = grip_rect(&e.kind, count, gi, sp, gs);
+                            let hot = app.canvas.hot_grips.contains(&(*h, gi));
+                            let warm = !hot && hover_pos.is_some_and(|hp| r.expand(2.0).contains(hp));
+                            painter.rect_filled(
+                                r,
+                                0.0,
+                                if hot {
+                                    t.grip_hot
+                                } else if warm {
+                                    Color32::from_rgb(0xff, 0x7f, 0x9f)
+                                } else {
+                                    t.grip
+                                },
+                            );
+                            painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_rgb(0x10, 0x30, 0x80)), egui::StrokeKind::Middle);
+                        }
                     }
                 }
             }

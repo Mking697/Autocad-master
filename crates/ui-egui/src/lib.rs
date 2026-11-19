@@ -23,6 +23,7 @@ pub mod control;
 pub mod credits;
 pub mod dialogs;
 pub mod docking;
+pub mod groupdlg;
 pub mod hatchdlg;
 mod mtext_editor;
 mod panel_state;
@@ -290,6 +291,8 @@ pub struct CadApp {
     pub gpu_notice: Option<autosave::GpuNotice>,
     /// The Command Aliases dialog while open ([`aliasdlg`]).
     pub alias_dlg: Option<aliasdlg::AliasDlgState>,
+    /// The Object Grouping dialog while open ([`groupdlg`]).
+    pub group_dlg: Option<groupdlg::GroupDlgState>,
     /// The Hatch and Gradient dialog while open or picking ([`hatchdlg`]).
     pub hatch_dlg: Option<hatchdlg::HatchDlgState>,
     /// The Edit Block Definition dialog ([`bedit`]).
@@ -347,6 +350,7 @@ impl CadApp {
             gpu_faults: std::sync::Arc::default(),
             gpu_notice: None,
             alias_dlg: None,
+            group_dlg: None,
             hatch_dlg: None,
             bedit: bedit::State::default(),
             quickcalc: palettes::quickcalc::State::default(),

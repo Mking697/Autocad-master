@@ -72,6 +72,7 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.cmdline.lines", "Command Line History Lines", &[], None),
     ("ui.cmdline.clear", "Clear Command History", &[], None),
     ("ui.dialog.language", "Interface Language", &["Edit", "Interface Language"], None),
+    ("ui.groupmgr", "Object Grouping...", &["Tools", "Object Grouping..."], None),
     ("ui.language", "Language", &[], None),
     ("ui.noop", "", &[], None),
     ("ui.quit", "Quit CADCraft", &[], Some("Cmd+Q")),
@@ -134,6 +135,10 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
     if let Some(i) = id.strip_prefix(RECENT_ITEM).and_then(|n| n.parse::<usize>().ok()) {
         let Some(path) = app.ui.recent_files.get(i).cloned() else { return Some(Err(format!("no recent file {i}"))) };
         app.open_path(&path);
+        return Some(Ok(Value::Null));
+    }
+    if id == "ui.groupmgr" {
+        crate::groupdlg::open(app);
         return Some(Ok(Value::Null));
     }
     let r = match id {
