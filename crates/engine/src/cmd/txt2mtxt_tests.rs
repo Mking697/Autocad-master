@@ -103,6 +103,8 @@ fn command_line_settings_and_locked_layers() {
     s.cmdline("").unwrap();
     assert!(s.prompt_text().contains("Word-wrap text? [Yes/No] <No>"), "{}", s.prompt_text());
     s.cmdline("").unwrap();
+    assert!(s.prompt_text().contains("Use uniform line spacing? [Yes/No] <No>"), "{}", s.prompt_text());
+    s.cmdline("").unwrap();
     s.input(crate::Input::Pick(handles(&hs))).unwrap();
     s.cmdline("").unwrap();
     let ms = mtexts(&s);
@@ -115,6 +117,51 @@ fn command_line_settings_and_locked_layers() {
         assert!(s.execute("txt2mtxt", &p).is_err(), "{p}");
     }
     assert_eq!(s.doc().unwrap().model.len(), n);
+}
+
+#[test]
+fn uniform_spacing_overrides_natural_spacing_when_combining() {
+    let mut s = Session::new();
+    let hs = three_lines(&mut s);
+    s.execute("txt2mtxt", &json!({"handles": hs, "uniform_spacing": true, "spacing": 2.5})).unwrap();
+    let ms = mtexts(&s);
+    let [(_, m)] = &ms[..] else { panic!("one MTEXT: {ms:?}") };
+    assert!(m.line_spacing_exact, "uniform spacing uses the exact line-spacing style");
+    assert_eq!(m.line_spacing, 2.5);
+    s.undo().unwrap();
+
+    // Off by default: natural (per-character-height) spacing, the "at least" style.
+    s.execute("txt2mtxt", &json!({"handles": hs})).unwrap();
+    let ms = mtexts(&s);
+    let [(_, m)] = &ms[..] else { panic!("one MTEXT: {ms:?}") };
+    assert!(!m.line_spacing_exact);
+    assert_eq!(m.line_spacing, 1.0);
+}
+
+#[test]
+fn hostile_spacing_value_is_rejected_not_panicking() {
+    let mut s = Session::new();
+    let hs = three_lines(&mut s);
+    for bad in [json!("not-a-number"), json!(0), json!(-1.0), json!([1, 2])] {
+        let p = json!({"handles": hs.clone(), "uniform_spacing": true, "spacing": bad});
+        assert!(s.execute("txt2mtxt", &p).is_err(), "{bad}");
+    }
+    assert_eq!(s.doc().unwrap().model.len(), 3, "a rejected spacing never touches the document");
+
+    // The interactive Settings sub-prompt rejects a hostile spacing value too, without a panic.
+    s.start("txt2mtxt").unwrap();
+    s.cmdline("se").unwrap();
+    s.cmdline("y").unwrap(); // Combine
+    s.cmdline("").unwrap(); // Sort top-down
+    s.cmdline("").unwrap(); // Word-wrap
+    s.cmdline("y").unwrap(); // Uniform line spacing
+    assert!(s.prompt_text().contains("Line spacing factor"), "{}", s.prompt_text());
+    assert!(s.cmdline("notanumber").is_ok(), "rejected input is echoed, not an error that aborts the command");
+    assert_eq!(s.log.last().map(String::as_str), Some("Requires a positive value."));
+    assert!(s.prompt_text().contains("Line spacing factor"), "still asking: {}", s.prompt_text());
+    assert!(s.cmdline("-3").is_ok());
+    assert_eq!(s.log.last().map(String::as_str), Some("Requires a positive value."));
+    assert!(s.prompt_text().contains("Line spacing factor"), "still asking: {}", s.prompt_text());
 }
 
 /// The vertical extent of each group of strokes that overlap vertically: one per line of

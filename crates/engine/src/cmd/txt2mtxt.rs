@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 
 use super::curves::KW;
 use super::helpers::v3;
-use super::machines::{SelOutcome, SelectPhase};
-use super::{CommandSpec, bad, bool_or, str_param, targets};
+use super::machines::{SelOutcome, SelectPhase, number};
+use super::{CommandSpec, bad, bool_or, size_param, str_param, targets};
 use crate::{Accept, EngineError, Input, Interactive, Prompt, Result, Session, Step};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -21,23 +21,30 @@ pub fn specs() -> Vec<CommandSpec> {
             .menu(&["Tools", "Express Tools", "Convert Text to Mtext"])
             .params(
                 "{handles? (default the selection; TEXT, and MTEXT when combining), combine? (default true: one MTEXT; false: one per TEXT), \
-                 sort?: \"topdown\" (default) | \"selection\", wrap? (default false: one line per text)} → {handles}",
+                 sort?: \"topdown\" (default) | \"selection\", wrap? (default false: one line per text), \
+                 uniform_spacing? (default false: each line keeps its source TEXT's natural spacing; true: a fixed spacing for all lines, combining only), \
+                 spacing? (line spacing factor used when uniform_spacing is true; default 1.0, must be positive)} → {handles}",
             )
             .interactive(|s| Ok(Box::new(Txt2MtxtM::new(s)))),
     ]
 }
 
-/// TXT2MTXT's settings: one MTEXT or one per TEXT, the order of the lines and word wrap.
+/// TXT2MTXT's settings: one MTEXT or one per TEXT, the order of the lines, word wrap and whether
+/// combined lines share one fixed line spacing instead of each keeping its source TEXT's own.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Txt2MtxtOptions {
     pub combine: bool,
     pub top_down: bool,
     pub wrap: bool,
+    /// When combining, override each source TEXT's natural line spacing with `spacing`.
+    pub uniform_spacing: bool,
+    /// The fixed line spacing factor used when `uniform_spacing` is set; always positive.
+    pub spacing: f64,
 }
 
 impl Default for Txt2MtxtOptions {
     fn default() -> Self {
-        Txt2MtxtOptions { combine: true, top_down: true, wrap: false }
+        Txt2MtxtOptions { combine: true, top_down: true, wrap: false, uniform_spacing: false, spacing: 1.0 }
     }
 }
 
@@ -96,18 +103,8 @@ fn convert(s: &mut Session, hs: &[Handle], o: &Txt2MtxtOptions) -> Result<(Vec<H
     let sep = if o.wrap { " " } else { "\\P" };
     let contents = items.iter().map(|(_, k, _)| contents(k, height)).collect::<Vec<_>>().join(sep);
     let width = if o.wrap { items.iter().map(|(_, k, _)| line_width(k)).fold(0.0, f64::max) } else { 0.0 };
-    let m = MText {
-        insert: v3(corner),
-        height,
-        width,
-        attach: 1,
-        rotation,
-        style,
-        contents,
-        line_spacing: 1.0,
-        line_spacing_exact: false,
-        columns: None,
-    };
+    let (line_spacing, line_spacing_exact) = if o.uniform_spacing { (o.spacing, true) } else { (1.0, false) };
+    let m = MText { insert: v3(corner), height, width, attach: 1, rotation, style, contents, line_spacing, line_spacing_exact, columns: None };
     let first = *first;
     let rest: Vec<Handle> = items.iter().skip(1).map(|(h, ..)| *h).collect();
     let d = s.doc_mut()?;
@@ -210,7 +207,9 @@ fn run_txt2mtxt(s: &mut Session, p: &Value) -> Result<Value> {
         Some("selection") => false,
         Some(v) => return Err(bad("txt2mtxt", format!("`sort` must be \"topdown\" or \"selection\", got \"{v}\""))),
     };
-    let o = Txt2MtxtOptions { combine: bool_or(p, "combine", true), top_down, wrap: bool_or(p, "wrap", false) };
+    let uniform_spacing = bool_or(p, "uniform_spacing", false);
+    let spacing = size_param("txt2mtxt", p, "spacing", false)?.unwrap_or(1.0);
+    let o = Txt2MtxtOptions { combine: bool_or(p, "combine", true), top_down, wrap: bool_or(p, "wrap", false), uniform_spacing, spacing };
     let (made, locked) = convert(s, &hs, &o)?;
     if made.is_empty() {
         let why = locked_note(locked).unwrap_or_else(|| "No text objects selected.".into());
@@ -230,6 +229,8 @@ enum Ask {
     Combine,
     Sort,
     Wrap,
+    UniformSpacing,
+    Spacing,
 }
 
 struct Txt2MtxtM {
@@ -265,7 +266,14 @@ impl Interactive for Txt2MtxtM {
     }
     fn begin(&mut self, s: &mut Session) -> Result<Step> {
         let o = &self.opts;
-        s.echo(format!("Current settings: Combine= {}, Sort top-down= {}, Word-wrap= {}", yes_no(o.combine), yes_no(o.top_down), yes_no(o.wrap)));
+        s.echo(format!(
+            "Current settings: Combine= {}, Sort top-down= {}, Word-wrap= {}, Uniform line spacing= {}{}",
+            yes_no(o.combine),
+            yes_no(o.top_down),
+            yes_no(o.wrap),
+            yes_no(o.uniform_spacing),
+            if o.uniform_spacing { format!(" ({:.4})", o.spacing) } else { String::new() }
+        ));
         self.sel = SelectPhase::begin(s);
         if self.sel.done {
             let hs = self.sel.picked.clone();
@@ -280,6 +288,8 @@ impl Interactive for Txt2MtxtM {
             Ask::Combine => Prompt::new("Combine text into a single MTEXT?", KW).kw(&["Yes", "No"]).default(yes_no(self.opts.combine)),
             Ask::Sort => Prompt::new("Sort text top-down?", KW).kw(&["Yes", "No"]).default(yes_no(self.opts.top_down)),
             Ask::Wrap => Prompt::new("Word-wrap text?", KW).kw(&["Yes", "No"]).default(yes_no(self.opts.wrap)),
+            Ask::UniformSpacing => Prompt::new("Use uniform line spacing?", KW).kw(&["Yes", "No"]).default(yes_no(self.opts.uniform_spacing)),
+            Ask::Spacing => Prompt::new("Line spacing factor", Accept::NUMBER).default(format!("{:.4}", self.opts.spacing)),
         }
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
@@ -322,6 +332,26 @@ impl Interactive for Txt2MtxtM {
                 match k {
                     Some("Yes") => self.opts.wrap = true,
                     Some("No") => self.opts.wrap = false,
+                    _ if i == Input::Enter => {}
+                    _ => return Ok(Step::Continue),
+                }
+                self.ask = Ask::UniformSpacing;
+            }
+            Ask::UniformSpacing => {
+                match k {
+                    Some("Yes") => self.opts.uniform_spacing = true,
+                    Some("No") => self.opts.uniform_spacing = false,
+                    _ if i == Input::Enter => {}
+                    _ => return Ok(Step::Continue),
+                }
+                self.ask = if self.opts.uniform_spacing { Ask::Spacing } else { Ask::Select };
+            }
+            Ask::Spacing => {
+                match &i {
+                    Input::Text(t) => {
+                        self.opts.spacing =
+                            number(t).filter(|v| v.is_finite() && *v > 0.0).ok_or_else(|| EngineError::Other("Requires a positive value.".into()))?;
+                    }
                     _ if i == Input::Enter => {}
                     _ => return Ok(Step::Continue),
                 }
