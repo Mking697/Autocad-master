@@ -72,6 +72,8 @@ pub struct HatchDlgState {
     /// pattern/gradient, scale, angle, associativity and island style into `fill`), not for
     /// switching into edit mode on the picked hatch.
     pub inheriting: bool,
+    /// A Preview is showing (the real command ran; any key or click undoes it and reopens).
+    pub previewing: bool,
 }
 
 /// Create mode, from the drawing's HATCH settings (HPNAME, HPSCALE, HPANG, HPASSOC, HPSEPARATE,
@@ -113,6 +115,7 @@ pub fn create_state(d: &Drawing, uid: u64, gradient: bool) -> HatchDlgState {
         uid,
         space: Space::Model,
         inheriting: false,
+        previewing: false,
     }
 }
 
@@ -348,6 +351,48 @@ pub fn start_pick(app: &mut CadApp, mode: PickMode) {
     }
 }
 
+/// Hide the dialog and commit its OK command for real (undoable); [`preview_resume`] undoes it
+/// and brings the dialog back on the next key or click, like AutoCAD's own Preview.
+fn start_preview(app: &mut CadApp) {
+    let Some(call) = app.hatch_dlg.as_ref().map(ok_call) else { return };
+    let Some((cmd, p)) = call else { return };
+    match app.run(cmd, p) {
+        Ok(_) => {
+            if let Some(st) = app.hatch_dlg.as_mut() {
+                st.previewing = true;
+            }
+            app.ui.dialog = None;
+        }
+        Err(e) => {
+            if let Some(st) = app.hatch_dlg.as_mut() {
+                st.error = Some(e.to_string());
+            }
+        }
+    }
+}
+
+/// Every frame while a Preview is showing: any key press or pointer click undoes the preview
+/// command and brings the dialog back, unchanged (its boundary edits are still in the dialog
+/// state, not in the undone command).
+pub fn preview_resume(app: &mut CadApp, ctx: &egui::Context) {
+    if !app.hatch_dlg.as_ref().is_some_and(|s| s.previewing) {
+        return;
+    }
+    if app.session.running.is_some() {
+        return;
+    }
+    let any_input = ctx
+        .input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. } | egui::Event::PointerButton { pressed: true, .. })));
+    if !any_input {
+        return;
+    }
+    let Some(mut st) = app.hatch_dlg.take() else { return };
+    st.previewing = false;
+    let _ = app.session.undo();
+    app.hatch_dlg = Some(st);
+    app.ui.dialog = Some("hatch".into());
+}
+
 /// Every frame: once a HATCHPICK the dialog started has ended, take its picks and bring the
 /// dialog back (unchanged when the pick was cancelled). A different drawing by then drops the
 /// dialog and its picks; a Hatch pick that found none closes it.
@@ -409,6 +454,7 @@ enum Action {
     None,
     Ok,
     Cancel,
+    Preview,
     Pick(PickMode),
     Inherit,
 }
@@ -475,6 +521,9 @@ pub fn dialog(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
             if ui.add_enabled(ready, egui::Button::new(crate::tl!("OK"))).clicked() {
                 action = Action::Ok;
             }
+            if ui.add_enabled(ready, egui::Button::new(crate::tl!("Preview"))).clicked() {
+                action = Action::Preview;
+            }
             if ui.button(crate::tl!("Cancel")).clicked() {
                 action = Action::Cancel;
             }
@@ -491,6 +540,7 @@ pub fn dialog(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
             app.hatch_dlg = None;
             *open = false;
         }
+        Action::Preview => start_preview(app),
         Action::Pick(mode) => start_pick(app, mode),
         Action::Inherit => {
             if let Some(s) = app.hatch_dlg.as_mut() {
@@ -966,6 +1016,56 @@ mod tests {
         assert!(ok(&mut app));
         assert_eq!(app.hatch_dlg, None);
         assert!(app.session.doc().unwrap().model.iter().any(|e| matches!(e.kind, cadcraft_doc::EntityKind::Hatch(_))));
+    }
+
+    /// Run one `egui` pass over `app` with `events`, calling [`preview_resume`] inside it.
+    fn preview_frame(app: &mut CadApp, events: Vec<egui::Event>) {
+        let ctx = egui::Context::default();
+        let raw =
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 500.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| preview_resume(app, ui.ctx()));
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn preview_hides_the_dialog_and_really_commits_the_hatch() {
+        let (mut app, _) = app_with_rect();
+        open_create(&mut app, false);
+        if let Some(st) = app.hatch_dlg.as_mut() {
+            st.points.push([5.0, 5.0]);
+        }
+        start_preview(&mut app);
+        assert_eq!(app.ui.dialog, None, "dialog hidden during Preview");
+        assert!(app.hatch_dlg.as_ref().unwrap().previewing);
+        assert!(
+            app.session.doc().unwrap().model.iter().any(|e| matches!(e.kind, cadcraft_doc::EntityKind::Hatch(_))),
+            "the hatch is really there, not just drawn"
+        );
+    }
+
+    #[test]
+    fn any_key_or_click_undoes_the_preview_and_brings_the_dialog_back() {
+        let (mut app, _) = app_with_rect();
+        open_create(&mut app, false);
+        if let Some(st) = app.hatch_dlg.as_mut() {
+            st.points.push([5.0, 5.0]);
+        }
+        let before = app.hatch_dlg.clone();
+        let n = app.session.doc().unwrap().model.len();
+        start_preview(&mut app);
+        // A quiet frame (no input) leaves the preview showing.
+        preview_frame(&mut app, Vec::new());
+        assert_eq!(app.ui.dialog, None, "still previewing");
+        // Any key brings the dialog back and undoes the committed hatch.
+        preview_frame(
+            &mut app,
+            vec![egui::Event::Key { key: egui::Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+        );
+        assert_eq!(app.ui.dialog.as_deref(), Some("hatch"));
+        assert_eq!(app.session.doc().unwrap().model.len(), n, "the preview hatch was undone");
+        let st = app.hatch_dlg.clone().unwrap();
+        assert!(!st.previewing);
+        assert_eq!((st.points.clone(), st.handles.clone()), (before.unwrap().points, Vec::new()));
     }
 
     #[test]
