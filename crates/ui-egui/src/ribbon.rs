@@ -3,8 +3,9 @@
 //! matching the real Ribbon more closely than CADCraft's original Mac-style Tool Sets sidebar
 //! (`palettes::toolsets`), which stays available (Window ▸ Tool Sets) for anyone who prefers it.
 //!
-//! Only the Home tab has real panels so far; the other tabs are listed (clicking them switches
-//! the active tab) but show a placeholder until their commands are grouped the same way.
+//! Only the Home, Insert, Annotate, Parametric and View tabs have real panels so far; Manage,
+//! Output, Collaborate and Express Tools are still listed (clicking them switches the active
+//! tab) but show a placeholder until their commands are grouped the same way.
 
 use egui::{Rect, Sense, Stroke, pos2, vec2};
 
@@ -13,7 +14,8 @@ use crate::icons::{self, Icon};
 use crate::palettes::DRAFTING;
 use crate::theme::Tokens;
 
-/// The Ribbon's tabs, in AutoCAD's own order. Only `"Home"` has panels today.
+/// The Ribbon's tabs, in AutoCAD's own order. `"Home"`, `"Insert"`, `"Annotate"`, `"Parametric"`
+/// and `"View"` have panels; the rest are listed but show a placeholder (see `panels_for`).
 pub const TABS: &[&str] = &["Home", "Insert", "Annotate", "Parametric", "View", "Manage", "Output", "Collaborate", "Express Tools"];
 
 type Tool = (Icon, &'static str, &'static str);
@@ -49,6 +51,87 @@ fn home_panels() -> Vec<(&'static str, Vec<Tool>)> {
         ("Properties", vec![(Icon::Properties, "ui.toggle.palettes", "Properties"), (Icon::MatchProp, "matchprop", "Match Properties")]),
         ("Utilities", vec![(Icon::Measure, "dist", "Measure"), (Icon::List, "list", "List"), (Icon::Area, "area", "Area")]),
     ]
+}
+
+/// The Insert tab's panels: block references, external references, and file exchange.
+fn insert_panels() -> Vec<(&'static str, Vec<Tool>)> {
+    vec![
+        (
+            "Block",
+            vec![
+                (Icon::Insert, "insert", "Insert"),
+                (Icon::BlockCreate, "block", "Create Block"),
+                (Icon::BlockEdit, "bedit", "Block Editor"),
+                (Icon::AttDef, "attdef", "Define Attributes"),
+            ],
+        ),
+        (
+            "Reference",
+            vec![
+                (Icon::Attach, "xattach", "Attach"),
+                (Icon::Blocks, "xref", "Reference Manager"),
+                (Icon::Insert, "xbind", "Bind"),
+                (Icon::BlockEdit, "xopen", "Edit Reference"),
+            ],
+        ),
+        ("Import", vec![(Icon::Import, "import", "Import"), (Icon::Export, "export", "Export")]),
+    ]
+}
+
+/// The Annotate tab's panels: AutoCAD groups Text/Dimensions/Leaders/Tables under their own
+/// panels here rather than Home's single combined Annotation panel.
+fn annotate_panels() -> Vec<(&'static str, Vec<Tool>)> {
+    ["Text", "Dimension", "Leader", "Table"]
+        .iter()
+        .filter_map(|group| DRAFTING.iter().find(|(n, _, _)| n == group).map(|(n, l, s)| (*n, l.iter().chain(s.iter()).copied().collect::<Vec<_>>())))
+        .collect()
+}
+
+/// The Parametric tab's panels: AutoCAD splits Geometric and Dimensional constraints, plus a
+/// Manage panel for the Parameters Manager and Delete Constraints.
+fn parametric_panels() -> Vec<(&'static str, Vec<Tool>)> {
+    let Some((_, large, small)) = DRAFTING.iter().find(|(n, _, _)| *n == "Parametric") else {
+        return Vec::new();
+    };
+    let is_dim = |cmd: &str| cmd.starts_with("dc");
+    let (dim, geo): (Vec<Tool>, Vec<Tool>) = small.iter().copied().partition(|(_, cmd, _)| is_dim(cmd));
+    vec![
+        ("Geometric", large.iter().copied().chain(geo).collect()),
+        ("Dimensional", dim),
+        ("Manage", vec![(Icon::Parameters, "parameters", "Parameters Manager"), (Icon::DelConstraint, "delconstraint", "Delete Constraints")]),
+    ]
+}
+
+/// The View tab's panels: navigation, viewport configuration and palette toggles.
+fn view_panels() -> Vec<(&'static str, Vec<Tool>)> {
+    vec![
+        (
+            "Navigate",
+            vec![
+                (Icon::ZoomExtents, "zoom.extents", "Zoom Extents"),
+                (Icon::ZoomWindow, "zoom.window", "Zoom Window"),
+                (Icon::Pan, "pan", "Pan"),
+                (Icon::Orbit, "3dorbit", "Orbit"),
+            ],
+        ),
+        (
+            "Viewports",
+            vec![(Icon::Blocks, "vports", "New Viewports"), (Icon::Blocks, "vports.2", "2 Viewports"), (Icon::Blocks, "vports.4", "4 Viewports")],
+        ),
+        ("Palettes", vec![(Icon::Properties, "ui.toggle.palettes", "Properties"), (Icon::LayerProps, "ui.dialog.layers", "Layer Properties")]),
+    ]
+}
+
+/// The panels for a Ribbon tab, or `None` for a tab that still shows the placeholder.
+fn panels_for(tab: &str) -> Option<Vec<(&'static str, Vec<Tool>)>> {
+    match tab {
+        "Home" => Some(home_panels()),
+        "Insert" => Some(insert_panels()),
+        "Annotate" => Some(annotate_panels()),
+        "Parametric" => Some(parametric_panels()),
+        "View" => Some(view_panels()),
+        _ => None,
+    }
 }
 
 /// A large Ribbon button: icon above a word-wrapped label, AutoCAD's own panel-button shape.
@@ -112,8 +195,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             egui::ScrollArea::horizontal().id_salt("ribbon_panels").auto_shrink([false, true]).show(ui, |ui| {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(false), |ui| {
                     ui.add_space(6.0);
-                    if app.ui.ribbon_tab == "Home" {
-                        for (i, (name, tools)) in home_panels().into_iter().enumerate() {
+                    if let Some(panels) = panels_for(&app.ui.ribbon_tab) {
+                        for (i, (name, tools)) in panels.into_iter().enumerate() {
                             if i > 0 {
                                 ui.add_space(6.0);
                                 let (sr, _) = ui.allocate_exact_size(vec2(1.0, panel_h - 20.0), Sense::hover());
@@ -162,6 +245,23 @@ mod tests {
         for (_, tools) in home_panels() {
             for (_, cmd, _) in tools {
                 assert!(cmd.starts_with("ui.") || cadcraft_engine::find_command(cmd).is_some(), "ribbon references unknown command `{cmd}`");
+            }
+        }
+    }
+
+    #[test]
+    fn every_tab_with_panels_only_references_known_commands() {
+        for tab in TABS {
+            if let Some(panels) = panels_for(tab) {
+                assert!(!panels.is_empty(), "`{tab}` panels_for returned no panels");
+                for (name, tools) in panels {
+                    for (_, cmd, _) in tools {
+                        assert!(
+                            cmd.starts_with("ui.") || cadcraft_engine::find_command(cmd).is_some(),
+                            "`{tab}` panel `{name}` references unknown command `{cmd}`"
+                        );
+                    }
+                }
             }
         }
     }
