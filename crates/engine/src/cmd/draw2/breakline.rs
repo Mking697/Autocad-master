@@ -5,10 +5,12 @@
 //! zigzag; the Block option takes a block of the drawing that marks its attachment points with
 //! two POINT objects on the Defpoints layer and draws the symbol with lines and polylines.
 
-use cadcraft_doc::{Drawing, EntityKind};
+use cadcraft_doc::{Block, Drawing, EntityKind};
 use cadcraft_geom::{PolyVertex, Vec2};
 use serde_json::Value;
 
+use super::super::blocks::valid_block_name;
+use super::super::file::io;
 use super::super::machines::number;
 use super::added;
 use super::curves::MAX_GEN;
@@ -23,7 +25,9 @@ pub fn specs() -> Vec<CommandSpec> {
             .menu(&["Tools", "Express Tools", "Break-line Symbol"])
             .params(
                 "{p1, p2, at?: [x,y] (symbol location; default the midpoint), size? (default 1, times DIMSCALE), \
-                 extension? (past both points; default 0), block? (a block with two points on Defpoints; default the built-in symbol)} → {handle}",
+                 extension? (past both points; default 0), block? (a block with two points on Defpoints; default the built-in symbol), \
+                 blockFile? (a .dwg/.dxf path; its model space is imported as a block, named after the file, and used as the symbol \
+                 unless a block of that name is already in the drawing)} → {handle}",
             )
             .interactive(|s| Ok(Box::new(BreaklineM::new(s)))),
     ]
@@ -148,6 +152,65 @@ fn symbol(s: &Session, block: &str) -> Result<Symbol> {
     if block.is_empty() { Ok(Symbol::built_in()) } else { Symbol::of_block(s.doc()?, block) }
 }
 
+/// The file name without folders and extension (either separator, so Windows paths work
+/// anywhere); the name BREAKLINE's `blockFile` gives the imported block.
+fn file_stem(path: &str) -> String {
+    let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    match file.rsplit_once('.') {
+        Some((stem, _)) if !stem.is_empty() => stem.to_string(),
+        _ => file.to_string(),
+    }
+}
+
+fn read_file_bytes(_path: &str) -> Result<Vec<u8>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::fs::read(_path).map_err(|e| other(format!("{_path}: {e}")))
+    }
+    #[cfg(target_arch = "wasm32")]
+    Err(other("paths are not available on the web"))
+}
+
+/// Import `path`'s block definition into the current drawing, the same mechanism INSERT uses for
+/// its own `file` parameter: the file is read through the host's io hooks, and its model space,
+/// with the file's `$INSBASE` as the base point, becomes a block named after the file. A name
+/// already in the drawing is left alone (not re-imported) and used as is, so repeated calls and
+/// a block the user already defined under that name are both safe. Never panics on a missing or
+/// corrupt file: read and parse failures come back as a proper error.
+fn import_block_file(s: &mut Session, path: &str) -> Result<String> {
+    let name = file_stem(path);
+    if s.doc()?.block(&name).is_some() {
+        return Ok(name);
+    }
+    if !valid_block_name(&name) {
+        return Err(other(format!("\"{name}\" is not a valid block name.")));
+    }
+    let hooks = io().ok_or_else(|| other("File formats are not available in this build."))?;
+    let bytes = read_file_bytes(path)?;
+    let src: Drawing = (hooks.read)(&bytes, path).map_err(|e| other(format!("{path}: {e}")))?;
+    let mut d = s.doc()?.clone();
+    let mut b = Block::new(&name);
+    b.base = src.header.point("INSBASE").filter(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite()).unwrap_or_default();
+    for e in src.model.iter() {
+        let mut e = (**e).clone();
+        e.handle = d.new_handle();
+        d.ensure_layer(&e.common.layer);
+        b.entities.push(e);
+    }
+    d.blocks.insert(name.clone(), std::sync::Arc::new(b));
+    *s.doc_mut()? = d;
+    Ok(name)
+}
+
+/// The block to use as the break symbol from BREAKLINE's JSON params: `blockFile` (imported if
+/// needed) takes priority over `block` (a name already in the drawing), else the built-in symbol.
+fn block_param(s: &mut Session, p: &Value) -> Result<String> {
+    match str_param(p, "blockFile") {
+        Some(path) => import_block_file(s, path),
+        None => Ok(str_param(p, "block").unwrap_or("").to_string()),
+    }
+}
+
 /// The breakline's vertices: the extension, the line up to the symbol, the symbol and the rest of
 /// the line. The symbol is centred on `at` projected onto the line (the midpoint without it) and
 /// kept between the two points.
@@ -189,7 +252,8 @@ fn run_breakline(s: &mut Session, p: &Value) -> Result<Value> {
     let p2 = point_req("breakline", p, "p2")?;
     let size = size_param("breakline", p, "size", false)?.unwrap_or(1.0);
     let ext = size_param("breakline", p, "extension", true)?.unwrap_or(0.0);
-    let sym = symbol(s, str_param(p, "block").unwrap_or(""))?;
+    let block = block_param(s, p)?;
+    let sym = symbol(s, &block)?;
     let vs = breakline_vertices(&sym, p1, p2, point_param(p, "at"), size * dimscale(s), ext)?;
     added(s.add_entity(lwpoly(vs, false))?)
 }

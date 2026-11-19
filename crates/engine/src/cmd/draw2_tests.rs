@@ -451,6 +451,76 @@ fn breakline_block_symbol_runs_between_its_defpoints() {
     assert_eq!(breakline_points(&s).len(), 6, "`.` goes back to the built-in symbol");
 }
 
+/// A test reader that ignores its bytes and returns a fixed drawing: a two-point Defpoints
+/// symbol (0,0)-(2,0) joined by a line, with `$INSBASE` at the origin. A probe path lets a test
+/// tell whether its own hooks won the process-wide race (see exchange.rs's `our_hooks`).
+fn breakline_file_read(_bytes: &[u8], path: &str) -> std::result::Result<cadcraft_doc::Drawing, String> {
+    if path == "breakline-probe.test" {
+        return Ok(cadcraft_doc::Drawing::default());
+    }
+    use cadcraft_doc::{Common, Entity, EntityKind, HVal, Handle, Line, Point};
+    let mut d = cadcraft_doc::Drawing::default();
+    d.header.set("INSBASE", HVal::Point(cadcraft_geom::Vec3::new(0.0, 0.0, 0.0)));
+    let mut a = Entity::new(Handle(1), EntityKind::Point(Point { p: cadcraft_geom::Vec3::new(0.0, 0.0, 0.0), angle: 0.0 }));
+    a.common = Common { layer: "Defpoints".into(), ..Default::default() };
+    let mut z = Entity::new(Handle(2), EntityKind::Point(Point { p: cadcraft_geom::Vec3::new(2.0, 0.0, 0.0), angle: 0.0 }));
+    z.common = Common { layer: "Defpoints".into(), ..Default::default() };
+    let line =
+        Entity::new(Handle(3), EntityKind::Line(Line { a: cadcraft_geom::Vec3::new(0.0, 0.0, 0.0), b: cadcraft_geom::Vec3::new(2.0, 0.0, 0.0) }));
+    d.model.push(a);
+    d.model.push(z);
+    d.model.push(line);
+    Ok(d)
+}
+
+/// Installs the test file-reading hooks; true when they are the ones in effect (process-wide
+/// `set_io`, so whichever test installs first across the binary wins — same pattern as
+/// exchange.rs's `our_hooks`).
+fn breakline_file_hooks() -> bool {
+    crate::cmd::file::set_io(crate::cmd::file::IoHooks { read: breakline_file_read, write: |_, _| Err("no writer in tests".into()), plot: None });
+    crate::cmd::file::io().is_some_and(|h| (h.read)(b"", "breakline-probe.test").is_ok_and(|d| d.model.is_empty()))
+}
+
+/// Writes a throwaway file under the temp dir and returns its path; the test reader ignores the
+/// bytes, so the content doesn't matter, only that a real file exists (or doesn't, for the
+/// missing-file test).
+fn breakline_temp_file(name: &str) -> String {
+    let dir = std::env::temp_dir().join(format!("cadcraft-breakline-file-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join(name);
+    std::fs::write(&p, b"stand-in content").unwrap();
+    p.to_string_lossy().into_owned()
+}
+
+#[test]
+fn breakline_block_file_imports_and_uses_symbol() {
+    if !breakline_file_hooks() {
+        return; // another test in this binary won the process-wide io hooks race
+    }
+    let mut s = Session::new();
+    let path = breakline_temp_file("peak.dxf");
+    s.execute("breakline", &json!({"p1": [0, 0], "p2": [10, 0], "blockFile": path})).unwrap();
+    assert_eq!(breakline_points(&s), vec![(0.0, 0.0), (4.0, 0.0), (6.0, 0.0), (10.0, 0.0)]);
+    assert!(s.doc().unwrap().block("peak").is_some(), "the file's model space became a block named after it");
+
+    // A second call with the same file path reuses the already-imported block (not re-read):
+    // pointing at a now-missing file under the same name still succeeds.
+    std::fs::remove_file(&path).unwrap();
+    s.execute("breakline", &json!({"p1": [0, 0], "p2": [10, 0], "blockFile": path})).unwrap();
+    assert_eq!(breakline_points(&s).len(), 4);
+}
+
+#[test]
+fn breakline_block_file_missing_path_is_a_clean_error() {
+    let mut s = Session::new();
+    let n = s.doc().unwrap().model.len();
+    let missing = std::env::temp_dir().join(format!("cadcraft-breakline-missing-{}.dxf", std::process::id()));
+    let r = s.execute("breakline", &json!({"p1": [0, 0], "p2": [10, 0], "blockFile": missing.to_string_lossy()}));
+    assert!(r.is_err(), "a missing file is a clean error, not a panic");
+    assert_eq!(s.doc().unwrap().model.len(), n, "nothing is added on failure");
+    assert!(s.doc().unwrap().block(&missing.file_stem().unwrap().to_string_lossy()).is_none(), "no block is defined on failure");
+}
+
 #[test]
 fn breakline_command_line_prompts_options_and_undo() {
     let mut s = Session::new();
