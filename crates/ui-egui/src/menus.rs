@@ -20,6 +20,11 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.spacemouse.navigate", "3D Mouse Navigation", &[], None),
     ("ui.dock", "Arrange Panel", &[], None),
     ("ui.dock.reset", "Reset Panel Layout", &["Window", "Reset Panel Layout"], None),
+    ("ui.workspaces", "Workspaces...", &["Window", "Workspaces..."], None),
+    ("ui.workspace.list", "List Workspaces", &[], None),
+    ("ui.workspace.save", "Save Workspace", &[], None),
+    ("ui.workspace.switch", "Switch Workspace", &[], None),
+    ("ui.workspace.delete", "Delete Workspace", &[], None),
     ("ui.open", "Open...", &[], Some("Cmd+O")),
     ("ui.newtemplate", "New from Template...", &["File", "New from Template..."], None),
     ("ui.saveas", "Save As...", &[], None),
@@ -88,6 +93,13 @@ pub fn run_ui_command(app: &mut CadApp, id: &str, params: &Value) -> Option<Resu
 }
 
 fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    if let Some(result) = crate::workspaces::route(app, id, params) {
+        return Some(result);
+    }
+    if id == "ui.workspaces" {
+        app.ui.dialog = Some("workspaces".into());
+        return Some(Ok(Value::Null));
+    }
     if let Some(result) = crate::spacemouse::route(app, id, params) {
         return Some(result);
     }

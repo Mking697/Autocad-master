@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-20 · **Change:** minor (Ribbon Quick Access Toolbar and local Info Bar; previously distinct polyline midpoint grips) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-20 · **Change:** minor (Ribbon contextual block/text/table tabs, Quick Access Toolbar and local Info Bar; previously distinct polyline midpoint grips) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
 
 How CADCraft's interaction compares with AutoCAD's: point entry, object snaps, tracking, dynamic
 input, grips, selection, the command line, chrome and navigation. A drafter's speed in AutoCAD
@@ -211,12 +211,26 @@ The local Info Bar below the panels shows the active drawing, unsaved-change mar
 and model/paper/viewport space, plus a bounded command-name/registered-alias launcher.
 Run and Enter use the same app dispatch as other controls; empty/unknown names do not
 cancel the active command. It is not online search, fuzzy matching or a full command-line
-argument parser. Contextual tabs and collaboration services remain unimplemented.
+argument parser. Contextual Block Editor, Text Editor and Table Tools tabs now derive
+from real editor/selection state, restore the enclosing context or previous normal tab,
+and reveal the active context in a horizontally scrolling tab strip. Block controls reuse
+BSAVE/BSAVEAS/interactive BCLOSE. Text formatting shares the canvas editor's model,
+character selection and caret; focus returns after toolbar formatting. Table controls
+append rows/columns, recalculate or begin cell editing using an explicit selected handle;
+mutations are disabled on locked selections or while TABLEDIT owns pending input.
+Collaboration services and Action Recorder remain unimplemented. Window ▸ Workspaces...
+saves/switches/deletes named interface layouts (docking, palette/toolbar/ribbon/Tool Sets
+visibility, the normal Ribbon tab, collapsed groups and QAT choices only); it never touches
+open drawings, the active command, pending command-line input or dialogs. Preferences
+restore validates the whole saved payload before applying anything, so a corrupt entry
+cannot silently reset the user's current (unsaved) arrangement.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-20 | minor | Window ▸ Workspaces... saves/switches/deletes up to 16 named interface layouts (docking, palette/toolbar/ribbon/Tool Sets visibility, normal Ribbon tab, QAT choices); validated atomically on save/restore, never touches drawings, the active command, pending command-line input or dialogs. New `ui.workspace.list/save/switch/delete` commands and `workspaces.rs`/`workspace_manager.rs` regressions. |
+| 2026-11-20 | minor | Contextual Block Editor, Text Editor and Table Tools tabs now follow real editor state, restore nested/normal tabs, scroll into view and reuse existing commands/shared MTEXT selection and formatting. Added lifecycle, real mutation, pending-input and canvas-focus regressions. |
 | 2026-11-20 | minor | Added a preference-backed customizable Ribbon Quick Access Toolbar and local document/command Info Bar. Engine enablement, bounded hostile input, scrolling and search Enter ownership have regression coverage; contextual tabs remain open. |
 | 2026-10-22 | minor | Polyline segment midpoint grips use rectangles, distinct from square vertex grips, with matching hover and pick bounds (#1950) |
 | 2026-10-13 | minor | Filled-region highlight boundaries are traversed in deterministic coordinate order, fixing dash-phase jumps on CPU hover/selection redraws and GPU highlight rebuilds; CPU dash-position, pixel and GPU mesh regressions |

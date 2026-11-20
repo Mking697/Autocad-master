@@ -72,6 +72,8 @@ struct State {
     sel: (usize, usize),
     /// A caret position to set on the text box in the next frame (after a toolbar insertion).
     caret: Option<usize>,
+    /// Return focus only after the canvas TextEdit has processed the toolbar click.
+    refocus: bool,
 }
 
 fn state_id() -> egui::Id {
@@ -91,6 +93,35 @@ fn color32(c: MTextColor) -> Color32 {
     Color32::from_rgb(rgb.0, rgb.1, rgb.2)
 }
 
+/// Both surfaces own the same temporary edit state, including the canvas selection and caret.
+fn editor_state(app: &CadApp, ctx: &egui::Context, style: &str) -> State {
+    ctx.data_mut(|d| d.get_temp::<State>(state_id())).unwrap_or_else(|| {
+        let mut fmt = Formatted::default();
+        if let Some(f) = app.session.doc().ok().and_then(|d| d.text_style(style).map(|s| s.font.clone())) {
+            // A family name, not a font file (`txt.shx`, `arial.ttf`).
+            if !f.is_empty() && !f.contains('.') {
+                fmt.base_font = f;
+            }
+        }
+        State { fmt, typing: CharFmt::default(), typing_at: 0, top: 70.0, sel: (0, 0), caret: None, refocus: false }
+    })
+}
+
+/// Contextual-ribbon adapter for the in-place editor's real formatting toolbar.
+/// Call before `show`; finishing and cancelling remain owned by the canvas editor.
+pub(crate) fn ribbon_controls(app: &mut CadApp, ui: &mut egui::Ui) {
+    let mtext = app.session.editing_mtext();
+    let asking = app.session.current_prompt().is_some_and(|p| p.accept.text && !p.accept.point);
+    let (Some(mt), true) = (mtext, asking) else {
+        ui.ctx().data_mut(|d| d.remove::<State>(state_id()));
+        return;
+    };
+    let mut st = editor_state(app, ui.ctx(), &mt.style);
+    let base_h = if mt.height > 0.0 { mt.height } else { 0.2 };
+    toolbar(ui, &mut st, base_h);
+    ui.ctx().data_mut(|d| d.insert_temp(state_id(), st));
+}
+
 /// Show the editor while MTEXT collects its text; clears its state when it isn't running.
 pub fn show(app: &mut CadApp, ctx: &egui::Context) {
     let mtext = app.session.editing_mtext();
@@ -101,16 +132,7 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
     };
     let t = Tokens::get();
     let (rect, scale) = app.canvas.xf.map_or((ctx.content_rect(), 20.0), |x| (x.rect, x.scale.max(1e-6)));
-    let mut st = ctx.data_mut(|d| d.get_temp::<State>(state_id())).unwrap_or_else(|| {
-        let mut fmt = Formatted::default();
-        if let Some(f) = app.session.doc().ok().and_then(|d| d.text_style(&mt.style).map(|s| s.font.clone())) {
-            // A family name, not a font file (`txt.shx`, `arial.ttf`).
-            if !f.is_empty() && !f.contains('.') {
-                fmt.base_font = f;
-            }
-        }
-        State { fmt, typing: CharFmt::default(), typing_at: 0, top: 70.0, sel: (0, 0), caret: None }
-    });
+    let mut st = editor_state(app, ctx, &mt.style);
     let base_h = if mt.height > 0.0 { mt.height } else { 0.2 };
     let px = ((base_h * scale) as f32).clamp(MIN_PX, MAX_PX);
     let width = if mt.width > 0.0 { ((mt.width * scale) as f32).clamp(280.0, rect.width().max(280.0) * 0.9) } else { 380.0 };
@@ -334,7 +356,7 @@ fn toolbar(ui: &mut egui::Ui, st: &mut State, base_h: f64) {
         }
     });
     if refocus {
-        ui.ctx().memory_mut(|m| m.request_focus(edit_id()));
+        st.refocus = true;
     }
 }
 
@@ -575,6 +597,9 @@ fn text_box(ui: &mut egui::Ui, st: &mut State, base_h: f64, px: f32, width: f32,
         let typing = st.typing.clone();
         st.fmt.set_text(&buf, &typing);
     }
+    if std::mem::take(&mut st.refocus) {
+        out.response.request_focus();
+    }
     if let Some(r) = out.cursor_range {
         let (a, b) = (r.primary.index.0, r.secondary.index.0);
         st.sel = (a, b);
@@ -603,7 +628,8 @@ mod tests {
     /// Clicking Diameter inserts U+2300 into both the formatted text and `to_contents()`, selects it, and leaves no unnamed widget.
     #[test]
     fn diameter_insertion_keeps_real_text_and_renders_without_optional_fonts() {
-        let state = State { fmt: Formatted::default(), typing: CharFmt::default(), typing_at: 0, top: 70.0, sel: (0, 0), caret: None };
+        let state =
+            State { fmt: Formatted::default(), typing: CharFmt::default(), typing_at: 0, top: 70.0, sel: (0, 0), caret: None, refocus: false };
         let mut harness = Harness::builder().with_size(vec2(1100.0, 300.0)).with_context_setup(install_diameter_glyph).build_ui_state(
             |ui, state| {
                 toolbar(ui, state, 2.5);
@@ -623,7 +649,8 @@ mod tests {
     /// The ten toolbar controls listed in the test are found by semantic name under the harness's default bundled fonts, and no toolbar widget is unnamed.
     #[test]
     fn the_whole_toolbar_uses_bundled_glyphs_and_names_its_controls() {
-        let mut state = State { fmt: Formatted::default(), typing: CharFmt::default(), typing_at: 0, top: 70.0, sel: (0, 0), caret: None };
+        let mut state =
+            State { fmt: Formatted::default(), typing: CharFmt::default(), typing_at: 0, top: 70.0, sel: (0, 0), caret: None, refocus: false };
         let mut harness = Harness::builder().with_size(vec2(1100.0, 120.0)).build_ui(move |ui| toolbar(ui, &mut state, 2.5));
         harness.run();
         for name in ["Left", "Center", "Right", "Justify", "Bulleted list", "Numbered list", "Insert tab", "Diameter", "Text color", "Font"] {
@@ -680,6 +707,204 @@ mod tests {
         let field = harness.get_by_role_and_label(Role::SpinButton, "Text height");
         assert_eq!(field.accesskit_node().label().as_deref(), Some("Text height"));
         assert!(harness.unnamed_widgets().is_empty(), "unnamed controls: {:?}", harness.unnamed_widgets());
+    }
+
+    struct RibbonTest {
+        app: CadApp,
+        ctx: egui::Context,
+        canvas: bool,
+        ribbon: bool,
+    }
+
+    impl RibbonTest {
+        fn new() -> Self {
+            Self { app: CadApp::new(Session::new(), Services::default()), ctx: egui::Context::default(), canvas: false, ribbon: true }
+        }
+
+        fn start(&mut self) {
+            self.app.start("mtext");
+            self.app.session.input(cadcraft_engine::Input::Point(cadcraft_geom::Vec2::new(1.0, 1.0))).unwrap();
+            self.app.session.input(cadcraft_engine::Input::Point(cadcraft_geom::Vec2::new(6.0, 0.0))).unwrap();
+        }
+
+        fn draw(ui: &mut egui::Ui, test: &mut Self) {
+            test.ctx = ui.ctx().clone();
+            if test.ribbon {
+                ribbon_controls(&mut test.app, ui);
+            }
+            if test.canvas {
+                show(&mut test.app, ui.ctx());
+            }
+        }
+
+        fn state(&self) -> State {
+            self.ctx.data_mut(|d| d.get_temp::<State>(state_id())).expect("shared editor state")
+        }
+    }
+
+    #[test]
+    fn ribbon_formats_canvas_selection_and_commits_real_mtext() {
+        let mut test = RibbonTest::new();
+        test.start();
+        // Locate the ribbon controls before the canvas adds its duplicate toolbar labels.
+        let mut h = Harness::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(RibbonTest::draw, test);
+        h.run();
+        let buttons = ["B", "I", "U", "O", "Center"].map(|label| h.get_by_label(label).rect().center());
+        h.state_mut().canvas = true;
+        h.run();
+        h.get_by_label("Text").type_text("aébc");
+        h.run();
+        let ctx = h.state().ctx.clone();
+        let mut edit = egui::TextEdit::load_state(&ctx, edit_id()).expect("canvas text edit");
+        edit.cursor.set_char_range(Some(CCursorRange { primary: CCursor::new(3), secondary: CCursor::new(1), ..Default::default() }));
+        edit.store(&ctx, edit_id());
+        h.run();
+        assert_eq!(h.state().state().sel, (3, 1));
+        for pos in buttons {
+            h.event(egui::Event::PointerMoved(pos));
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+            }
+            h.run();
+            assert_eq!(h.state().state().sel, (3, 1), "ribbon must not collapse or reverse the canvas selection");
+            assert!(ctx.memory(|m| m.has_focus(edit_id())), "formatting returns focus to the canvas");
+        }
+        let st = h.state().state();
+        assert_eq!(st.fmt.text(), "aébc");
+        for index in [1, 2] {
+            let fmt = st.fmt.fmt_at(index);
+            assert!(fmt.bold && fmt.italic && fmt.underline && fmt.overline);
+        }
+        for index in [0, 3] {
+            let fmt = st.fmt.fmt_at(index);
+            assert!(!fmt.bold && !fmt.italic && !fmt.underline && !fmt.overline);
+        }
+        assert_eq!(st.fmt.para(0).align, ParaAlign::Center);
+        let expected = st.fmt.to_contents();
+        // Leaving and returning to the contextual tab must not reinitialize the editor.
+        h.state_mut().ribbon = false;
+        h.run();
+        h.state_mut().ribbon = true;
+        h.run();
+        assert_eq!(h.state().state().sel, (3, 1));
+        assert_eq!(h.state().state().fmt.to_contents(), expected);
+        h.get_by_label("OK").click();
+        h.run();
+        assert!(ctx.data_mut(|d| d.get_temp::<State>(state_id())).is_none());
+        let doc = h.state().app.session.doc().unwrap();
+        let contents: Vec<_> = doc
+            .model
+            .iter()
+            .filter_map(|entity| match &entity.kind {
+                cadcraft_engine::doc::EntityKind::MText(mt) => Some(mt.contents.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(contents, vec![expected.as_str()]);
+    }
+
+    #[test]
+    fn ribbon_initializes_shared_typing_format_before_canvas_and_cancel_clears_it() {
+        let mut test = RibbonTest::new();
+        test.start();
+        let mut h = Harness::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(RibbonTest::draw, test);
+        h.run();
+        assert!(h.state().state().fmt.is_empty());
+        h.get_by_label("B").click();
+        h.run();
+        assert!(h.state().state().typing.bold);
+        h.state_mut().canvas = true;
+        h.run();
+        h.get_by_label("Text").type_text("first");
+        h.run();
+        assert_eq!(h.state().state().fmt.text(), "first");
+        assert!(h.state().state().fmt.fmt_at(0).bold);
+        h.get_by_label("Cancel").click();
+        h.run();
+        assert!(h.state().ctx.data_mut(|d| d.get_temp::<State>(state_id())).is_none());
+        assert!(h.state().app.session.doc().unwrap().model.is_empty());
+        h.state_mut().start();
+        h.run();
+        let st = h.state().state();
+        assert!(st.fmt.is_empty());
+        assert_eq!(st.sel, (0, 0));
+        assert!(!st.typing.bold);
+        h.get_by_label("Text").type_text("second");
+        h.run();
+        assert_eq!(h.state().state().fmt.text(), "second");
+        assert!(!h.state().state().fmt.fmt_at(0).bold);
+        h.get_by_label("OK").click();
+        h.run();
+        assert!(
+            h.state()
+                .app
+                .session
+                .doc()
+                .unwrap()
+                .model
+                .iter()
+                .any(|entity| { matches!(&entity.kind, cadcraft_engine::doc::EntityKind::MText(mt) if mt.contents == "second") })
+        );
+    }
+
+    #[test]
+    fn ribbon_insertion_replaces_character_selection_and_restores_canvas_caret() {
+        let mut test = RibbonTest::new();
+        test.start();
+        let mut h =
+            Harness::builder().with_size(vec2(1200.0, 800.0)).with_context_setup(install_diameter_glyph).build_ui_state(RibbonTest::draw, test);
+        h.run();
+        let pos = h.get_by_label("Diameter").rect().center();
+        h.state_mut().canvas = true;
+        h.run();
+        h.get_by_label("Text").type_text("aébc");
+        h.run();
+        let ctx = h.state().ctx.clone();
+        let mut edit = egui::TextEdit::load_state(&ctx, edit_id()).expect("canvas text edit");
+        edit.cursor.set_char_range(Some(CCursorRange { primary: CCursor::new(3), secondary: CCursor::new(1), ..Default::default() }));
+        edit.store(&ctx, edit_id());
+        h.run();
+        h.event(egui::Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        }
+        h.run();
+        assert_eq!(h.state().state().fmt.text(), "a⌀c");
+        assert_eq!(h.state().state().sel, (2, 2));
+        assert!(h.state().state().caret.is_none(), "canvas consumed the ribbon's pending caret");
+        assert!(ctx.memory(|m| m.has_focus(edit_id())));
+        h.event(egui::Event::Text("!".into()));
+        h.run();
+        assert_eq!(h.state().state().fmt.text(), "a⌀!c");
+        assert_eq!(h.state().state().sel, (3, 3));
+        h.get_by_label("OK").click();
+        h.run();
+        assert!(
+            h.state()
+                .app
+                .session
+                .doc()
+                .unwrap()
+                .model
+                .iter()
+                .any(|entity| { matches!(&entity.kind, cadcraft_engine::doc::EntityKind::MText(mt) if mt.contents == "a⌀!c") })
+        );
+    }
+
+    #[test]
+    fn inactive_ribbon_does_not_fabricate_editor_state() {
+        let mut h = Harness::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(RibbonTest::draw, RibbonTest::new());
+        h.run();
+        assert!(h.state().ctx.data_mut(|d| d.get_temp::<State>(state_id())).is_none());
+        assert!(h.query_by_label("Font").is_none());
+        h.state_mut().app.start("mtext");
+        h.run();
+        assert!(h.state().ctx.data_mut(|d| d.get_temp::<State>(state_id())).is_none());
+        assert!(h.query_by_label("Font").is_none());
+        h.state_mut().app.session.input(cadcraft_engine::Input::Point(cadcraft_geom::Vec2::new(1.0, 1.0))).unwrap();
+        h.run();
+        assert!(h.state().ctx.data_mut(|d| d.get_temp::<State>(state_id())).is_none());
+        assert!(h.query_by_label("Font").is_none());
     }
 
     #[test]

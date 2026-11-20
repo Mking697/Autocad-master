@@ -13,6 +13,9 @@ use crate::icons::{self, Icon};
 use crate::palettes::DRAFTING;
 use crate::theme::Tokens;
 
+mod contextual;
+use contextual::Context;
+
 /// The Ribbon's tabs, in AutoCAD's own order. `"Home"`, `"Insert"`, `"Annotate"`, `"Parametric"`
 /// and `"View"` have panels; the rest are listed but show a placeholder (see `panels_for`).
 pub const TABS: &[&str] = &["Home", "Insert", "Annotate", "Parametric", "View", "Manage", "Output", "Collaborate", "Express Tools"];
@@ -167,6 +170,14 @@ fn panels_for(tab: &str) -> Option<Vec<(&'static str, Vec<Tool>)>> {
         "Manage" => Some(manage_panels()),
         "Output" => Some(output_panels()),
         "Express Tools" => Some(express_panels()),
+        "Block Editor" => Some(vec![
+            (
+                "Block Definition",
+                vec![(Icon::Save, "bsave", "Save Block"), (Icon::SaveAs, "bsaveas", "Save Block As"), (Icon::Close, "bclose", "Close Block Editor")],
+            ),
+            ("Draw", draw_tools()),
+            ("Modify", modify_tools()),
+        ]),
         _ => None,
     }
 }
@@ -261,11 +272,12 @@ fn ribbon_button(ui: &mut egui::Ui, icon: Icon, label: &str, w: f32, h: f32) -> 
         }
         let icon_size = (h - 20.0).clamp(16.0, 32.0);
         let icon_rect = Rect::from_center_size(pos2(rect.center().x, rect.top() + icon_size / 2.0 + 2.0), vec2(icon_size, icon_size));
-        icons::paint(p, icon_rect, icon, false);
+        icons::paint(p, icon_rect, icon, !ui.is_enabled());
         let mut job = egui::text::LayoutJob::simple(label.to_string(), crate::theme::small(), t.text, w - 4.0);
         job.halign = egui::Align::Center;
         let galley = p.layout_job(job);
-        p.galley(pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - galley.size().y - 2.0), galley, t.text);
+        // Center-aligned galleys already extend to either side of their origin.
+        p.galley(pos2(rect.center().x, rect.bottom() - galley.size().y - 2.0), galley, t.text);
     }
     icons::describe_control(ui, &resp, label, None, false);
     resp.on_hover_text(crate::i18n::t(label))
@@ -274,6 +286,7 @@ fn ribbon_button(ui: &mut egui::Ui, icon: Icon, label: &str, w: f32, h: f32) -> 
 /// Tab strip and, for the active tab, its panel row; 26 px tabs over a panel band like AutoCAD's
 /// own Ribbon. Height is fixed so docking below it never jitters.
 pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
+    let (contexts, scroll_active) = contextual::sync(app, ui.ctx());
     let t = Tokens::get();
     let qat_h = 24.0;
     let tab_h = 26.0;
@@ -289,25 +302,44 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         let qat_clicked = qat_row(app, ui, Rect::from_min_size(r.min, vec2(r.width(), qat_h)));
         p.hline(r.x_range(), r.top() + qat_h, Stroke::new(1.0, t.border.gamma_multiply(0.6)));
         let r = Rect::from_min_max(pos2(r.left(), r.top() + qat_h), r.max);
-        // Tabs.
-        let mut x = r.left() + 8.0;
-        for name in TABS {
-            let w = ui.painter().layout_no_wrap(crate::i18n::t(name).to_string(), crate::theme::body(), t.text).size().x + 20.0;
-            let tr = Rect::from_min_size(pos2(x, r.top()), vec2(w, tab_h));
-            let active = app.ui.ribbon_tab == *name;
-            let resp = ui.interact(tr, ui.scope_id().with(("ribtab", name)), Sense::click());
-            if active {
-                p.rect_filled(tr, 0.0, t.tab_active);
-            } else if resp.hovered() {
-                p.rect_filled(tr, 0.0, t.control_hover.gamma_multiply(0.5));
-            }
-            p.text(tr.center(), egui::Align2::CENTER_CENTER, crate::i18n::t(name), crate::theme::body(), if active { t.text } else { t.text_dim });
-            icons::describe_control(ui, &resp, name, Some(active), true);
-            if resp.clicked() {
-                app.ui.ribbon_tab = (*name).to_string();
-            }
-            x += w;
-        }
+        // A bounded-height horizontal strip keeps contextual tabs reachable on small windows.
+        let tab_rect = Rect::from_min_size(r.min, vec2(r.width(), tab_h));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(tab_rect), |ui| {
+            egui::ScrollArea::horizontal().id_salt("ribbon_tabs").auto_shrink([false, false]).show(ui, |ui| {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(false), |ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.add_space(8.0);
+                    for name in TABS.iter().copied().chain(contexts.iter().map(|c| c.name())) {
+                        let w = ui.painter().layout_no_wrap(crate::i18n::t(name).to_string(), crate::theme::body(), t.text).size().x + 20.0;
+                        let (tr, resp) = ui.allocate_exact_size(vec2(w, tab_h), Sense::click());
+                        let active = app.ui.ribbon_tab == name;
+                        let contextual = contexts.iter().any(|c| c.name() == name);
+                        if active {
+                            ui.painter().rect_filled(tr, 0.0, t.tab_active);
+                        } else if resp.hovered() {
+                            ui.painter().rect_filled(tr, 0.0, t.control_hover.gamma_multiply(0.5));
+                        }
+                        if contextual {
+                            ui.painter().hline(tr.x_range(), tr.top() + 1.0, Stroke::new(2.0, t.accent));
+                        }
+                        ui.painter().text(
+                            tr.center(),
+                            egui::Align2::CENTER_CENTER,
+                            crate::i18n::t(name),
+                            crate::theme::body(),
+                            if active { t.text } else { t.text_dim },
+                        );
+                        icons::describe_control(ui, &resp, name, Some(active), true);
+                        if active && scroll_active {
+                            resp.scroll_to_me(Some(egui::Align::Center));
+                        }
+                        if resp.clicked() {
+                            app.ui.ribbon_tab = name.to_string();
+                        }
+                    }
+                });
+            });
+        });
         p.hline(r.x_range(), r.top() + tab_h, Stroke::new(1.0, t.border));
         // Panel row for the active tab.
         let body = Rect::from_min_max(pos2(r.left(), r.top() + tab_h), pos2(r.right(), r.top() + tab_h + panel_h));
@@ -316,7 +348,11 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             egui::ScrollArea::horizontal().id_salt("ribbon_panels").auto_shrink([false, true]).show(ui, |ui| {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(false), |ui| {
                     ui.add_space(6.0);
-                    if let Some(panels) = panels_for(&app.ui.ribbon_tab) {
+                    if app.ui.ribbon_tab == Context::Text.name() {
+                        crate::mtext_editor::ribbon_controls(app, ui);
+                    } else if app.ui.ribbon_tab == Context::Table.name() {
+                        contextual::table_controls(app, ui, button_h);
+                    } else if let Some(panels) = panels_for(&app.ui.ribbon_tab) {
                         for (i, (name, tools)) in panels.into_iter().enumerate() {
                             if i > 0 {
                                 ui.add_space(6.0);
@@ -330,7 +366,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(false), |ui| {
                                     ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
                                     for (icon, cmd, tip) in &tools {
-                                        if ribbon_button(ui, *icon, tip, 50.0, button_h).clicked() {
+                                        let enabled = cadcraft_engine::find_command(cmd)
+                                            .map_or(cmd.starts_with("ui."), |spec| (spec.enabled)(&app.session).is_ok());
+                                        if ui.add_enabled_ui(enabled, |ui| ribbon_button(ui, *icon, tip, 50.0, button_h)).inner.clicked() {
                                             clicked = Some(*cmd);
                                         }
                                     }
@@ -366,6 +404,31 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiline_button_label_is_centered_inside_its_hit_rectangle() {
+        fn check(shape: &egui::Shape, button: Rect) -> bool {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text() == "Edit Table Cell" => {
+                    let painted = text.galley.rect.translate(text.pos.to_vec2());
+                    assert!((painted.center().x - button.center().x).abs() < 1.0, "label {painted:?} must center in {button:?}");
+                    assert!(painted.left() >= button.left() && painted.right() <= button.right());
+                    true
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().any(|shape| check(shape, button)),
+                _ => false,
+            }
+        }
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let mut button = Rect::NOTHING;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                button = ribbon_button(ui, Icon::Table, "Edit Table Cell", 68.0, 74.0).rect;
+            });
+            output.textures_delta.clear();
+            assert!(output.shapes.iter().any(|shape| check(&shape.shape, button)));
+        }
+    }
 
     #[test]
     fn home_panels_only_reference_commands_the_engine_or_the_ui_knows() {

@@ -28,6 +28,8 @@ pub mod hatchdlg;
 mod mtext_editor;
 mod panel_state;
 pub mod spacemouse;
+pub mod workspace_manager;
+pub mod workspaces;
 // The External References palette.
 pub mod xrefs;
 
@@ -303,6 +305,8 @@ pub struct CadApp {
     pub hatch_dlg: Option<hatchdlg::HatchDlgState>,
     /// The Edit Block Definition dialog ([`bedit`]).
     pub bedit: bedit::State,
+    /// Named UI layouts, persisted separately from drawing and transient editor state.
+    pub workspaces: workspaces::Registry,
     /// QuickCalc's expression, history and variables ([`palettes::quickcalc`]); the history and
     /// variables survive restarts through [`options::CadApp::profile_json`].
     pub quickcalc: palettes::quickcalc::State,
@@ -359,6 +363,7 @@ impl CadApp {
             group_dlg: None,
             hatch_dlg: None,
             bedit: bedit::State::default(),
+            workspaces: workspaces::Registry::default(),
             quickcalc: palettes::quickcalc::State::default(),
             #[cfg(not(target_arch = "wasm32"))]
             updates_rt: updates_ui::Runtime::default(),
@@ -460,6 +465,9 @@ impl CadApp {
         {
             prefs["qatCommands"] = json!(self.ui.qat_commands);
         }
+        if let Ok(Some(workspaces)) = self.workspaces.prefs(&self.ui) {
+            prefs["workspaces"] = workspaces;
+        }
         if self.spacemouse.settings != spacemouse::Settings::default() {
             prefs["spacemouse"] = json!(self.spacemouse.settings);
         }
@@ -499,6 +507,12 @@ impl CadApp {
         if let Some(commands) = v.get("qatCommands").and_then(Value::as_array) {
             self.ui.qat_commands = commands.iter().take(64).filter_map(Value::as_str).filter(|s| s.len() <= 32).map(str::to_string).collect();
             ribbon::normalize_qat(&mut self.ui.qat_commands);
+        }
+        if let Some(value) = v.get("workspaces") {
+            match workspaces::Registry::restore(value, &mut self.ui) {
+                Ok(registry) => self.workspaces = registry,
+                Err(error) => self.session.echo(format!("Workspaces were not restored: {error}")),
+            }
         }
         if let Some(dir) = v.get("lispDir").and_then(Value::as_str).filter(|d| !d.is_empty()) {
             self.ui.last_lisp_dir = Some(dir.to_string());
