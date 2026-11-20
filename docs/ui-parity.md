@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (distinct polyline midpoint grips) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-20 · **Change:** minor (Ribbon Quick Access Toolbar and local Info Bar; previously distinct polyline midpoint grips) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
 
 How CADCraft's interaction compares with AutoCAD's: point entry, object snaps, tracking, dynamic
 input, grips, selection, the command line, chrome and navigation. A drafter's speed in AutoCAD
@@ -199,10 +199,25 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
   have menus too (#512). Still missing: in-place layout tab rename, Move or Copy, Select All
   Layouts.
 
+## Ribbon additions (2026-11-20)
+
+With Window ▸ Ribbon enabled, a compact Quick Access Toolbar above the tabs offers
+New/Open/Save/Undo/Redo/Print by default, with Save As and Batch Publish available in
+its customization menu. Choices (including an empty strip) persist through preferences;
+unknown and duplicate ids are removed and command enablement follows the engine.
+A pinned customization button remains reachable while the tool strip scrolls.
+
+The local Info Bar below the panels shows the active drawing, unsaved-change marker
+and model/paper/viewport space, plus a bounded command-name/registered-alias launcher.
+Run and Enter use the same app dispatch as other controls; empty/unknown names do not
+cancel the active command. It is not online search, fuzzy matching or a full command-line
+argument parser. Contextual tabs and collaboration services remain unimplemented.
+
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-20 | minor | Added a preference-backed customizable Ribbon Quick Access Toolbar and local document/command Info Bar. Engine enablement, bounded hostile input, scrolling and search Enter ownership have regression coverage; contextual tabs remain open. |
 | 2026-10-22 | minor | Polyline segment midpoint grips use rectangles, distinct from square vertex grips, with matching hover and pick bounds (#1950) |
 | 2026-10-13 | minor | Filled-region highlight boundaries are traversed in deterministic coordinate order, fixing dash-phase jumps on CPU hover/selection redraws and GPU highlight rebuilds; CPU dash-position, pixel and GPU mesh regressions |
 | 2026-10-14 | minor | Selection cycling (#1143): the list and badge of SELECTIONCYCLING, Shift+Space through overlapping objects (#1145) |

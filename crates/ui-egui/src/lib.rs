@@ -37,6 +37,7 @@ pub mod gpu;
 pub mod grip_dyn;
 pub mod i18n;
 pub mod icons;
+pub mod infobar;
 pub mod layers;
 pub mod managers;
 pub mod menus;
@@ -124,6 +125,10 @@ pub struct UiState {
     pub recent_files: Vec<String>,
     /// The folder the last APPLOAD file came from: the next pick starts there.
     pub last_lisp_dir: Option<String>,
+    /// Command ids shown in the Ribbon's Quick Access Toolbar, in display order.
+    /// Customized through its "Customize Quick Access Toolbar" dropdown. Preference restore,
+    /// control input and rendering keep only bounded, unique `ribbon::QAT_CANDIDATES` ids.
+    pub qat_commands: Vec<String>,
 }
 
 /// A DXF/DWG file version (2000 … 2018).
@@ -198,6 +203,7 @@ impl Default for UiState {
             save_version: SaveVersion::default().year().to_string(),
             recent_files: Vec::new(),
             last_lisp_dir: None,
+            qat_commands: ribbon::QAT_CANDIDATES.iter().filter(|(_, _, _, default)| *default).map(|(_, cmd, _, _)| (*cmd).into()).collect(),
         }
     }
 }
@@ -445,6 +451,15 @@ impl CadApp {
             "saveFormat": self.ui.save_format.as_str(),
             "saveVersion": self.ui.save_version,
         });
+        if !self
+            .ui
+            .qat_commands
+            .iter()
+            .map(String::as_str)
+            .eq(ribbon::QAT_CANDIDATES.iter().filter(|(_, _, _, default)| *default).map(|(_, id, _, _)| *id))
+        {
+            prefs["qatCommands"] = json!(self.ui.qat_commands);
+        }
         if self.spacemouse.settings != spacemouse::Settings::default() {
             prefs["spacemouse"] = json!(self.spacemouse.settings);
         }
@@ -480,6 +495,10 @@ impl CadApp {
         }
         if let Some(files) = v.get("recentFiles").and_then(Value::as_array) {
             self.ui.recent_files = files.iter().filter_map(Value::as_str).filter(|p| !p.is_empty()).take(RECENT_FILES).map(str::to_string).collect();
+        }
+        if let Some(commands) = v.get("qatCommands").and_then(Value::as_array) {
+            self.ui.qat_commands = commands.iter().take(64).filter_map(Value::as_str).filter(|s| s.len() <= 32).map(str::to_string).collect();
+            ribbon::normalize_qat(&mut self.ui.qat_commands);
         }
         if let Some(dir) = v.get("lispDir").and_then(Value::as_str).filter(|d| !d.is_empty()) {
             self.ui.last_lisp_dir = Some(dir.to_string());
@@ -837,6 +856,7 @@ impl CadApp {
         chrome::title_and_toolbar(self, ui);
         if self.ui.show_ribbon {
             ribbon::show(self, ui);
+            infobar::show(self, ui);
         }
         if self.ui.in_window_menu {
             menus::menu_bar(self, ui);

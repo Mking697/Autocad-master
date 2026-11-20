@@ -23,6 +23,7 @@ mod options_dialog;
 mod parameters_rename;
 mod pickdrag;
 mod properties_units;
+mod qat_toolbar;
 mod rapid_clicks;
 mod ribbon_toggle;
 mod selection_cycling;

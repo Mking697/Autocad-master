@@ -453,10 +453,11 @@ pub fn handle(app: &mut CadApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                 }
             }
             match serde_json::from_value::<crate::UiState>(cur) {
-                Ok(u) => {
+                Ok(mut u) => {
                     if let Err(error) = crate::docking::validate(&u.docking) {
                         return err(error);
                     }
+                    crate::ribbon::normalize_qat(&mut u.qat_commands);
                     app.ui = u;
                     ok(serde_json::to_value(&app.ui).unwrap_or_default())
                 }
