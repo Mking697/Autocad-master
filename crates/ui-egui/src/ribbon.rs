@@ -3,9 +3,8 @@
 //! matching the real Ribbon more closely than CADCraft's original Mac-style Tool Sets sidebar
 //! (`palettes::toolsets`), which stays available (Window ▸ Tool Sets) for anyone who prefers it.
 //!
-//! Only the Home, Insert, Annotate, Parametric and View tabs have real panels so far; Manage,
-//! Output, Collaborate and Express Tools are still listed (clicking them switches the active
-//! tab) but show a placeholder until their commands are grouped the same way.
+//! Home, Insert, Annotate, Parametric, View, Manage, Output and Express Tools have real panels;
+//! Collaborate stays a placeholder (no wireable commands yet — see `docs/gaps.md` F23).
 
 use egui::{Rect, Sense, Stroke, pos2, vec2};
 
@@ -122,6 +121,41 @@ fn view_panels() -> Vec<(&'static str, Vec<Tool>)> {
     ]
 }
 
+/// The Manage tab's panels: application loading, command-alias customization, and settings.
+/// AutoCAD's real Manage tab also has an Action Recorder panel; CADCraft has no action-recording
+/// engine yet, so it is left out rather than wired to a non-existent command.
+fn manage_panels() -> Vec<(&'static str, Vec<Tool>)> {
+    vec![
+        ("Applications", vec![(Icon::Import, "appload", "Load Application")]),
+        ("Customization", vec![(Icon::Gear, "aliasedit", "Edit Aliases")]),
+        ("Settings", vec![(Icon::Gear, "options", "Options")]),
+    ]
+}
+
+/// The Output tab's panels: plotting, exporting to other formats, and batch publishing.
+fn output_panels() -> Vec<(&'static str, Vec<Tool>)> {
+    vec![
+        ("Plot", vec![(Icon::Plot, "plot", "Plot"), (Icon::Preview, "preview", "Preview")]),
+        ("Export to DWF/PDF", vec![(Icon::Export, "export", "Export")]),
+        ("Batch Publish", vec![(Icon::Publish, "publish", "Batch Publish")]),
+    ]
+}
+
+/// The Express Tools tab's panels: the classic Express Tools menu's commands, grouped the way
+/// AutoCAD's own Express Tools ribbon tab does (Blocks/Modify/Text/Draw/Tools).
+fn express_panels() -> Vec<(&'static str, Vec<Tool>)> {
+    vec![
+        (
+            "Blocks",
+            vec![(Icon::Explode, "burst", "Burst"), (Icon::BlockEdit, "blockreplace", "Replace Block"), (Icon::Copy, "ncopy", "Copy Nested Objects")],
+        ),
+        ("Modify", vec![(Icon::Move, "mocoro", "Move/Copy/Rotate")]),
+        ("Text", vec![(Icon::MText, "txt2mtxt", "Convert Text to Mtext")]),
+        ("Draw", vec![(Icon::Break, "breakline", "Break-line Symbol")]),
+        ("Tools", vec![(Icon::Gear, "aliasedit", "Command Aliases")]),
+    ]
+}
+
 /// The panels for a Ribbon tab, or `None` for a tab that still shows the placeholder.
 fn panels_for(tab: &str) -> Option<Vec<(&'static str, Vec<Tool>)>> {
     match tab {
@@ -130,6 +164,9 @@ fn panels_for(tab: &str) -> Option<Vec<(&'static str, Vec<Tool>)>> {
         "Annotate" => Some(annotate_panels()),
         "Parametric" => Some(parametric_panels()),
         "View" => Some(view_panels()),
+        "Manage" => Some(manage_panels()),
+        "Output" => Some(output_panels()),
+        "Express Tools" => Some(express_panels()),
         _ => None,
     }
 }
