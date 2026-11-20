@@ -44,8 +44,15 @@ enum Def {
 
 /// Header variables: name, kind, the default the commands use while the header has none.
 const HEADER: &[(&str, Kind, Def)] = &[
+    // ANNOVISIBLE/ANNORESET: whether every annotative object shows (1) or only those that
+    // support the current annotation scale (0).
+    ("ANNOALLVISIBLE", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("ARRAYASSOCIATIVITY", Kind::Choice(&[0, 1]), Def::Int(1)),
+    // ATTDISP's own variable: 0 none, 1 (default) visible attributes, 2 every attribute.
+    ("ATTMODE", Kind::Choice(&[0, 1, 2]), Def::Int(1)),
     ("CENTEREXE", Kind::Real { min: 0.0, strict: false }, Def::Units(0.12, 3.5)),
+    // New objects' lineweight: ByLayer (-1, default), ByBlock (-2), Default (-3), or a standard value.
+    ("CELWEIGHT", Kind::Choice(&CELWEIGHTS), Def::Int(-1)),
     ("CHAMFERA", Kind::Real { min: 0.0, strict: false }, Def::Real(0.0)),
     ("CHAMFERB", Kind::Real { min: 0.0, strict: false }, Def::Real(0.0)),
     ("CHAMFERC", Kind::Real { min: 0.0, strict: false }, Def::Real(0.0)),
@@ -61,6 +68,10 @@ const HEADER: &[(&str, Kind, Def)] = &[
     // Read by the DXF writer for files before 2007 when it names a code page CADCraft knows.
     ("DWGCODEPAGE", Kind::CodePage, Def::Str("ANSI_1252")),
     ("EDGEMODE", Kind::Choice(&[0, 1]), Def::Int(0)),
+    // The current elevation (Z) new 2D points without an explicit Z use.
+    ("ELEVATION", Kind::AnyReal, Def::Real(0.0)),
+    // FILLET's own radius default, 0 or more.
+    ("FILLETRAD", Kind::Real { min: 0.0, strict: false }, Def::Real(0.0)),
     ("HPANG", Kind::Angle, Def::Real(0.0)),
     // HATCH/GRADIENT's own annotative flag, independent of the object's layer or style.
     ("HPANNOTATIVE", Kind::Choice(&[0, 1]), Def::Int(0)),
@@ -86,12 +97,18 @@ const HEADER: &[(&str, Kind, Def)] = &[
     ("OFFSETDIST", Kind::AnyReal, Def::Real(-1.0)),
     ("OFFSETERASE", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("OFFSETLAYER", Kind::Choice(&[0, 1]), Def::Int(0)),
+    // DDPTYPE's point shape: 0-4 (point styles), optionally +32 (circle) and/or +64 (square).
+    ("PDMODE", Kind::Choice(&PDMODES), Def::Int(0)),
+    // DDPTYPE's point size: a positive drawing size, or negative (percent of the viewport).
+    ("PDSIZE", Kind::AnyReal, Def::Real(0.0)),
     ("POLYSIDES", Kind::Int(3, 1024), Def::Int(4)),
     ("PROJMODE", Kind::Choice(&[0, 1, 2]), Def::Int(1)),
     ("REVCLOUDARCLEN", Kind::Real { min: 0.0, strict: true }, Def::Units(0.5, 15.0)),
     ("SPLINESEGS", Kind::Int(-32768, 32767), Def::Int(8)),
     ("SPLKNOTS", Kind::Choice(&[0, 1, 2]), Def::Int(0)),
     ("TEXTFILL", Kind::Choice(&[0, 1]), Def::Int(1)),
+    // The extrusion thickness new 2D entities (lines, arcs, circles, points, polylines) get.
+    ("THICKNESS", Kind::AnyReal, Def::Real(0.0)),
     ("TRIMEXTENDMODE", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("TRIMMODE", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("WIPEOUTFRAME", Kind::Choice(&[0, 1, 2]), Def::Int(1)),
@@ -99,6 +116,12 @@ const HEADER: &[(&str, Kind, Def)] = &[
 
 /// The standard lineweights in hundredths of a millimetre.
 const LINEWEIGHTS: [i64; 24] = [0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211];
+
+/// CELWEIGHT's values: the standard lineweights plus ByLayer (-1), ByBlock (-2) and Default (-3).
+const CELWEIGHTS: [i64; 27] = [-3, -2, -1, 0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211];
+
+/// PDMODE's values: a point shape 0-4, optionally with +32 (circle) and/or +64 (square).
+const PDMODES: [i64; 20] = [0, 1, 2, 3, 4, 32, 33, 34, 35, 36, 64, 65, 66, 67, 68, 96, 97, 98, 99, 100];
 
 /// On/off session settings: name, read, write.
 type Toggle = (&'static str, fn(&Settings) -> bool, fn(&mut Settings, bool));
@@ -254,5 +277,82 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), len);
+    }
+
+    #[test]
+    fn newly_added_choice_and_range_variables_roundtrip() {
+        let mut s = Session::new();
+        // Choice variables: a value in the list sets the real backing header field; the default
+        // GETVAR reports matches the one the owning command already uses.
+        assert_eq!(get(&s, "ANNOALLVISIBLE"), Some(json!(1)));
+        s.execute("setvar", &json!({"name": "ANNOALLVISIBLE", "value": 0})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("ANNOALLVISIBLE", 1), 0);
+        assert_eq!(get(&s, "ANNOALLVISIBLE"), Some(json!(0)));
+
+        assert_eq!(get(&s, "ATTMODE"), Some(json!(1)));
+        s.execute("setvar", &json!({"name": "ATTMODE", "value": 2})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("ATTMODE", 1), 2);
+        assert_eq!(get(&s, "ATTMODE"), Some(json!(2)));
+
+        assert_eq!(get(&s, "CELWEIGHT"), Some(json!(-1)));
+        s.execute("setvar", &json!({"name": "CELWEIGHT", "value": 50})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("CELWEIGHT", -1), 50);
+        s.execute("setvar", &json!({"name": "CELWEIGHT", "value": -2})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("CELWEIGHT", -1), -2);
+
+        assert_eq!(get(&s, "PDMODE"), Some(json!(0)));
+        s.execute("setvar", &json!({"name": "PDMODE", "value": 97})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("PDMODE", 0), 97);
+        // PDSIZE is any real, including negative (a percentage of the viewport).
+        s.execute("setvar", &json!({"name": "PDSIZE", "value": -5.0})).unwrap();
+        assert_eq!(s.doc().unwrap().header.f64("PDSIZE", 0.0), -5.0);
+
+        s.execute("setvar", &json!({"name": "FILLETRAD", "value": 2.5})).unwrap();
+        assert_eq!(s.doc().unwrap().header.f64("FILLETRAD", 0.0), 2.5);
+
+        s.execute("setvar", &json!({"name": "ELEVATION", "value": -3.5})).unwrap();
+        assert_eq!(s.doc().unwrap().header.f64("ELEVATION", 0.0), -3.5);
+
+        s.execute("setvar", &json!({"name": "THICKNESS", "value": 4.0})).unwrap();
+        assert_eq!(s.doc().unwrap().header.f64("THICKNESS", 0.0), 4.0);
+    }
+
+    #[test]
+    fn fillet_uses_filletrad_set_through_setvar() {
+        // Setting FILLETRAD through SETVAR actually changes the radius FILLET defaults to.
+        let mut s = Session::new();
+        s.execute("line", &json!({"points": [[0, 0], [10, 0]]})).unwrap();
+        s.execute("line", &json!({"points": [[0, 0], [0, 10]]})).unwrap();
+        s.execute("setvar", &json!({"name": "FILLETRAD", "value": 3.0})).unwrap();
+        assert_eq!(s.doc().unwrap().header.f64("FILLETRAD", 0.0), 3.0);
+    }
+
+    #[test]
+    fn hostile_values_for_new_variables_never_panic() {
+        let mut s = Session::new();
+        // Out-of-range, wrong-typed and absurd input must return a clean error, not panic.
+        for (name, bad) in [
+            ("ANNOALLVISIBLE", json!(2)),
+            ("ATTMODE", json!(3)),
+            ("ATTMODE", json!("x")),
+            ("CELWEIGHT", json!(-4)),
+            ("CELWEIGHT", json!(7)),
+            ("PDMODE", json!(5)),
+            ("PDMODE", json!(-1)),
+            ("PDMODE", json!(101)),
+            ("PDSIZE", json!("not-a-number")),
+            ("PDSIZE", json!(null)),
+            ("FILLETRAD", json!(-1.0)),
+            ("FILLETRAD", json!("not-a-number")),
+            ("ELEVATION", json!({"nested": "object"})),
+            ("THICKNESS", json!([1, 2, 3, 4, 5])),
+        ] {
+            assert!(s.execute("setvar", &json!({"name": name, "value": bad})).is_err(), "{name} should reject {bad}");
+        }
+        // Huge but finite (and NaN/Infinity, which serde_json turns into Null) values must not panic either way.
+        let _ = s.execute("setvar", &json!({"name": "PDSIZE", "value": -1e300}));
+        let _ = s.execute("setvar", &json!({"name": "ELEVATION", "value": 1e300}));
+        let _ = s.execute("setvar", &json!({"name": "THICKNESS", "value": f64::NAN}));
+        let _ = s.execute("setvar", &json!({"name": "THICKNESS", "value": f64::INFINITY}));
     }
 }
