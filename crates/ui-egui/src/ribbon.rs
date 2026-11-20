@@ -259,6 +259,12 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                                 ui.label(egui::RichText::new(crate::i18n::t(name)).color(t.text_dim).size(11.5));
                             });
                         }
+                    } else if app.ui.ribbon_tab == "Collaborate" {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(crate::tl!("Collaborate has no online service to connect to yet (Share, eTransmit, Markup Import)."))
+                                .color(t.text_faint),
+                        );
                     } else {
                         ui.add_space(8.0);
                         ui.label(egui::RichText::new(crate::tl!("This Ribbon tab has no panels yet.")).color(t.text_faint));
