@@ -46,10 +46,13 @@ enum Def {
 const HEADER: &[(&str, Kind, Def)] = &[
     // ANNOVISIBLE/ANNORESET: whether every annotative object shows (1) or only those that
     // support the current annotation scale (0).
+    ("ANGDIR", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("ANNOALLVISIBLE", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("ARRAYASSOCIATIVITY", Kind::Choice(&[0, 1]), Def::Int(1)),
     // ATTDISP's own variable: 0 none, 1 (default) visible attributes, 2 every attribute.
     ("ATTMODE", Kind::Choice(&[0, 1, 2]), Def::Int(1)),
+    // Legacy screen-blip marker toggle; harmless either way in CADCraft but kept for script compatibility.
+    ("BLIPMODE", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("CENTEREXE", Kind::Real { min: 0.0, strict: false }, Def::Units(0.12, 3.5)),
     // New objects' lineweight: ByLayer (-1, default), ByBlock (-2), Default (-3), or a standard value.
     ("CELWEIGHT", Kind::Choice(&CELWEIGHTS), Def::Int(-1)),
@@ -63,6 +66,8 @@ const HEADER: &[(&str, Kind, Def)] = &[
     ("CMLSCALE", Kind::AnyReal, Def::Units(1.0, 20.0)),
     ("CPLOTSTYLE", Kind::ReadOnlyStr, Def::Str("ByLayer")),
     ("DIMASSOC", Kind::Choice(&[0, 1, 2]), Def::Int(2)),
+    // Visibility of silhouette curves of 3D solids; doesn't change geometry.
+    ("DISPSILH", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("DONUTID", Kind::Real { min: 0.0, strict: false }, Def::Real(0.5)),
     ("DONUTOD", Kind::Real { min: 0.0, strict: true }, Def::Real(1.0)),
     // Read by the DXF writer for files before 2007 when it names a code page CADCraft knows.
@@ -70,6 +75,10 @@ const HEADER: &[(&str, Kind, Def)] = &[
     ("EDGEMODE", Kind::Choice(&[0, 1]), Def::Int(0)),
     // The current elevation (Z) new 2D points without an explicit Z use.
     ("ELEVATION", Kind::AnyReal, Def::Real(0.0)),
+    // Approximation accuracy for rendering/shading curved 3D surfaces (not polyline geometry).
+    ("FACETRES", Kind::Real { min: 0.01, strict: false }, Def::Real(0.5)),
+    // Whether FILL applies to solids, 2D polylines, hatches etc (the render code already reads it).
+    ("FILLMODE", Kind::Choice(&[0, 1]), Def::Int(1)),
     // FILLET's own radius default, 0 or more.
     ("FILLETRAD", Kind::Real { min: 0.0, strict: false }, Def::Real(0.0)),
     ("HPANG", Kind::Angle, Def::Real(0.0)),
@@ -92,7 +101,10 @@ const HEADER: &[(&str, Kind, Def)] = &[
     // HATCH's SEparate option default (one hatch per picked point/object instead of one for all).
     ("HPSEPARATE", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("INSNAME", Kind::Name, Def::Str("")),
+    ("ISOLINES", Kind::Int(0, 2047), Def::Int(4)),
     ("LWDEFAULT", Kind::Choice(&LINEWEIGHTS), Def::Int(25)),
+    // Mirrored text keeps reading left to right (0, default) instead of flipping (1).
+    ("MIRRTEXT", Kind::Choice(&[0, 1]), Def::Int(0)),
     // Negative: Through (OFFSET picks a point).
     ("OFFSETDIST", Kind::AnyReal, Def::Real(-1.0)),
     ("OFFSETERASE", Kind::Choice(&[0, 1]), Def::Int(0)),
@@ -101,11 +113,26 @@ const HEADER: &[(&str, Kind, Def)] = &[
     ("PDMODE", Kind::Choice(&PDMODES), Def::Int(0)),
     // DDPTYPE's point size: a positive drawing size, or negative (percent of the viewport).
     ("PDSIZE", Kind::AnyReal, Def::Real(0.0)),
+    // ELLIPSE's own default representation: 0 true ellipse, 1 a fitted polyline.
+    ("PELLIPSE", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("POLYSIDES", Kind::Int(3, 1024), Def::Int(4)),
     ("PROJMODE", Kind::Choice(&[0, 1, 2]), Def::Int(1)),
+    // Text drawn as filled glyphs (0) or as outline boxes for speed (1).
+    ("QTEXTMODE", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("REVCLOUDARCLEN", Kind::Real { min: 0.0, strict: true }, Def::Units(0.5, 15.0)),
+    // Legacy SKETCH line-vs-polyline output toggle.
+    ("SKPOLY", Kind::Choice(&[0, 1]), Def::Int(0)),
     ("SPLINESEGS", Kind::Int(-32768, 32767), Def::Int(8)),
     ("SPLKNOTS", Kind::Choice(&[0, 1, 2]), Def::Int(0)),
+    // Spline curve fit type for 2D polylines' SPLINE option: 5 quadratic, 6 (default) cubic B-spline.
+    ("SPLINETYPE", Kind::Choice(&[5, 6]), Def::Int(6)),
+    // 3D mesh density along the two directions a ruled/edge/revolved/tabulated surface is built.
+    ("SURFTAB1", Kind::Int(0, 32767), Def::Int(6)),
+    ("SURFTAB2", Kind::Int(0, 32767), Def::Int(6)),
+    // Default surface type for smoothed (SPLINE-fit) 3D meshes: 5 quadratic, 6 cubic, 8 Bezier.
+    ("SURFTYPE", Kind::Choice(&[5, 6, 8]), Def::Int(6)),
+    ("SURFU", Kind::Int(2, 200), Def::Int(6)),
+    ("SURFV", Kind::Int(2, 200), Def::Int(6)),
     ("TEXTFILL", Kind::Choice(&[0, 1]), Def::Int(1)),
     // The extrusion thickness new 2D entities (lines, arcs, circles, points, polylines) get.
     ("THICKNESS", Kind::AnyReal, Def::Real(0.0)),
@@ -354,5 +381,105 @@ mod tests {
         let _ = s.execute("setvar", &json!({"name": "ELEVATION", "value": 1e300}));
         let _ = s.execute("setvar", &json!({"name": "THICKNESS", "value": f64::NAN}));
         let _ = s.execute("setvar", &json!({"name": "THICKNESS", "value": f64::INFINITY}));
+    }
+
+    #[test]
+    fn u10_batch_variables_roundtrip() {
+        let mut s = Session::new();
+        // Choice variables backed by real header fields other code already reads.
+        assert_eq!(get(&s, "FILLMODE"), Some(json!(1)));
+        s.execute("setvar", &json!({"name": "FILLMODE", "value": 0})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("FILLMODE", 1), 0);
+        assert_eq!(get(&s, "FILLMODE"), Some(json!(0)));
+
+        assert_eq!(get(&s, "MIRRTEXT"), Some(json!(0)));
+        s.execute("setvar", &json!({"name": "MIRRTEXT", "value": 1})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("MIRRTEXT", 0), 1);
+
+        assert_eq!(get(&s, "ANGDIR"), Some(json!(0)));
+        s.execute("setvar", &json!({"name": "ANGDIR", "value": 1})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("ANGDIR", 0), 1);
+
+        assert_eq!(get(&s, "DISPSILH"), Some(json!(0)));
+        s.execute("setvar", &json!({"name": "DISPSILH", "value": 1})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("DISPSILH", 0), 1);
+
+        assert_eq!(get(&s, "BLIPMODE"), Some(json!(0)));
+        s.execute("setvar", &json!({"name": "BLIPMODE", "value": 1})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("BLIPMODE", 0), 1);
+
+        assert_eq!(get(&s, "PELLIPSE"), Some(json!(0)));
+        s.execute("setvar", &json!({"name": "PELLIPSE", "value": 1})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("PELLIPSE", 0), 1);
+
+        assert_eq!(get(&s, "QTEXTMODE"), Some(json!(0)));
+        s.execute("setvar", &json!({"name": "QTEXTMODE", "value": 1})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("QTEXTMODE", 0), 1);
+
+        assert_eq!(get(&s, "SKPOLY"), Some(json!(0)));
+        s.execute("setvar", &json!({"name": "SKPOLY", "value": 1})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("SKPOLY", 0), 1);
+
+        // Int range variables.
+        assert_eq!(get(&s, "ISOLINES"), Some(json!(4)));
+        s.execute("setvar", &json!({"name": "ISOLINES", "value": 16})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("ISOLINES", 4), 16);
+
+        assert_eq!(get(&s, "SURFTAB1"), Some(json!(6)));
+        s.execute("setvar", &json!({"name": "SURFTAB1", "value": 24})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("SURFTAB1", 6), 24);
+        s.execute("setvar", &json!({"name": "SURFTAB2", "value": 30})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("SURFTAB2", 6), 30);
+
+        assert_eq!(get(&s, "SURFU"), Some(json!(6)));
+        s.execute("setvar", &json!({"name": "SURFU", "value": 12})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("SURFU", 6), 12);
+        s.execute("setvar", &json!({"name": "SURFV", "value": 10})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("SURFV", 6), 10);
+
+        // Choice with a non-0/1 set.
+        assert_eq!(get(&s, "SURFTYPE"), Some(json!(6)));
+        s.execute("setvar", &json!({"name": "SURFTYPE", "value": 8})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("SURFTYPE", 6), 8);
+
+        assert_eq!(get(&s, "SPLINETYPE"), Some(json!(6)));
+        s.execute("setvar", &json!({"name": "SPLINETYPE", "value": 5})).unwrap();
+        assert_eq!(s.doc().unwrap().header.i64("SPLINETYPE", 6), 5);
+
+        // Real with only a lower bound.
+        assert_eq!(get(&s, "FACETRES"), Some(json!(0.5)));
+        s.execute("setvar", &json!({"name": "FACETRES", "value": 2.0})).unwrap();
+        assert_eq!(s.doc().unwrap().header.f64("FACETRES", 0.5), 2.0);
+    }
+
+    #[test]
+    fn u10_batch_hostile_values_never_panic() {
+        let mut s = Session::new();
+        for (name, bad) in [
+            ("FILLMODE", json!(2)),
+            ("FILLMODE", json!("x")),
+            ("MIRRTEXT", json!(-1)),
+            ("ANGDIR", json!(5)),
+            ("DISPSILH", json!(null)),
+            ("BLIPMODE", json!("maybe")),
+            ("PELLIPSE", json!(2)),
+            ("QTEXTMODE", json!(2)),
+            ("SKPOLY", json!(2)),
+            ("ISOLINES", json!(-1)),
+            ("ISOLINES", json!(2048)),
+            ("SURFTAB1", json!(-1)),
+            ("SURFU", json!(1)),
+            ("SURFU", json!(201)),
+            ("SURFTYPE", json!(7)),
+            ("SPLINETYPE", json!(7)),
+            ("FACETRES", json!(0.0)),
+            ("FACETRES", json!("not-a-number")),
+        ] {
+            assert!(s.execute("setvar", &json!({"name": name, "value": bad})).is_err(), "{name} should reject {bad}");
+        }
+        // Huge but finite / non-finite values must not panic either way.
+        let _ = s.execute("setvar", &json!({"name": "FACETRES", "value": 1e300}));
+        let _ = s.execute("setvar", &json!({"name": "FACETRES", "value": f64::NAN}));
+        let _ = s.execute("setvar", &json!({"name": "ISOLINES", "value": f64::INFINITY}));
     }
 }
