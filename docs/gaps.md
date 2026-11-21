@@ -19,6 +19,15 @@ the Est. hours (some are stale). Mark a row `[x]` **in this list** the session i
 section below once fully closed. Don't reorder phases; narrowing an estimate or re-ranking inside
 a phase is fine.
 
+### Phase 0 — before resuming feature work (do this first)
+- [ ] Fresh full parity re-audit: `target-app-parity.md`'s feature breadth was re-measured
+      2026-11-21 (296/491 = 60%, up from the stale 233/491 = 47%), but its weighted "ready for
+      real work" (~38%), mainstream (~28%) and essentials (~46%) composites were NOT — those need
+      a real per-dimension depth re-read of the code (14 feature-area rows + 9 dimension rows +
+      2 audience tables), several hours of work. Method and exact steps are in `plan/STATUS.md`
+      under "NEXT SESSION FIRST TASK". Do this before picking up Phase 1/2 rows below, so the
+      percentage reported to the user reflects everything already landed, not a stale estimate
+
 ### Phase 1 — small alpha-adjacent stubs (≈1–5h each, no new subsystem)
 - [x] F1 (colour books only): -LAYER/-ATTEDIT Colorbook keyword (`48cea109`)
 - [ ] F1 (remainder): -RENAME of materials — re-scope first: CADCraft has no material table at
