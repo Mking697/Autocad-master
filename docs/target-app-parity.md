@@ -1,6 +1,6 @@
 # Target-app parity: CADCraft vs AutoCAD 2027
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (COMPAREEXPORT; numbers not re-measured) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-21 · **Change:** minor (feature-breadth re-measured by actually running `cargo xtask parity` against current `main`: **296/491 = 60%** engine-covered menu items, up from 233/491 = 47% on 2026-10-10 — real, mechanical, reproducible count; the weighted "ready for real work"/mainstream/essentials percentages below are NOT re-measured yet, still from 2026-10-24's manual dimension audit — see Revision history and `plan/STATUS.md` for the fresh full re-audit queued for next session) · **Target:** Autodesk AutoCAD 2027
 
 The authoritative assessment of how close CADCraft is to AutoCAD, and how much Opus 5.5 work
 remains. [ROADMAP.md](../ROADMAP.md) summarises it, [gaps.md](gaps.md) lists every shortfall,
@@ -12,7 +12,7 @@ and the deep checklists are [geometry-parity.md](geometry-parity.md),
 
 | Number | Value | Kind |
 |---|---|---|
-| **Feature breadth** (AutoCAD for Mac menu items with a live command) | **245 / 491 = 50%** (233 = 47% counted by `cargo xtask parity`, which sees engine commands only; +12 UI-only items) | measured ([parity-checklist.md](parity-checklist.md), source scan) |
+| **Feature breadth** (AutoCAD for Mac menu items with a live command) | **296 / 491 = 60%** by `cargo xtask parity` (re-measured 2026-11-21, up from 233/491 = 47% on 2026-10-10 — mechanical source scan, UI-only items not included; stale 245/491=50% composite below not recomputed) | measured ([parity-checklist.md](parity-checklist.md), `cargo xtask parity`) |
 | Feature breadth, 2D menus only (excluding 150 3D items) | **≈ 65%** (222 / 341 by `cargo xtask parity`'s rule) | measured (source scan, 2026-10-10) |
 | Feature depth, weighted by use (features dimension) | **≈ 41%** | estimated (table below) |
 | **Ready for real work** | **≈ 38%** | estimated (dimension table below; weighted 37.7%) |
@@ -223,7 +223,7 @@ DWG/DXF corpus (files from people who own them); black-box checks in AutoCAD of 
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-24 | minor | Inquiry and utilities row: COMPAREEXPORT exports a comparison to a new drawing; parity percentages and hours not re-measured |
+| 2026-11-21 | minor | Feature breadth re-measured by actually running `cargo xtask parity` against current `main`: **296/491 = 60%** engine-covered menu items (up from 233/491 = 47% on 2026-10-10). The weighted "ready for real work" (≈38%), mainstream (≈28%) and essentials (≈46%) composites below are **not re-measured** — those need a full manual per-dimension depth audit (several hours), queued for the next session (see `plan/STATUS.md`). Do not read "ready for real work" as still accurate without that re-audit; feature breadth moving 47%→60% strongly suggests it has improved, but by how much is unmeasured |
 | 2026-10-22 | minor | Draw row: RECTANG gained a centre construction mode (`Center` keyword, `center: true`) beside its corner mode (#1127); parity percentages and hours not re-measured |
 | 2026-10-12 | minor | Hatch row evidence: Hatch and Gradient / Hatch Edit dialogs; percentages and hours not re-measured |
 | 2026-10-12 | minor | Blocks row evidence: Block Editor for static blocks (BEDIT, BSAVE, BSAVEAS, BCLOSE); percentages and hours not re-measured |
