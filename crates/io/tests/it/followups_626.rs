@@ -191,6 +191,25 @@ fn code_page_is_kept_before_2007() {
     assert_eq!(code_page(&dxf(&Drawing::new_metric(), Version::R2000)), "ANSI_1252");
 }
 
+/// FF4: Johab (`ANSI_1361`) and the DOS code pages (437, 850, 852, 855, 857, 860–865, 869) that
+/// `cadcraft_dxf::decode_code_page` knows how to read are now also kept on save before 2007
+/// (not downgraded to ANSI_1252), the same way `code_page_is_kept_before_2007` already proved for
+/// ANSI_1251. The 694d6057 round added real decoders for these; `code_page()` in `dxf_write.rs`
+/// already checked `decode_code_page(...).is_some()` to decide, so once the decoder exists the
+/// save side follows automatically — this just proves it for every one of them, not just one.
+#[test]
+fn johab_and_dos_code_pages_are_also_kept_before_2007() {
+    for page in ["ANSI_1361", "DOS437", "DOS850", "DOS852", "DOS855", "DOS857", "DOS860", "DOS861", "DOS862", "DOS863", "DOS864", "DOS865", "DOS869"]
+    {
+        let mut d = Drawing::new_metric();
+        d.header.set_str("DWGCODEPAGE", page);
+        let text = dxf(&d, Version::R2000);
+        assert_eq!(code_page(&text), page, "{page} should round-trip, not fall back to ANSI_1252");
+        let back = cadcraft_io::read_dxf(text.as_bytes()).unwrap();
+        assert_eq!(back.header.str("DWGCODEPAGE", ""), page);
+    }
+}
+
 #[test]
 fn modelled_dictionaries_are_not_kept_twice() {
     let mut d = Drawing::new_metric();
