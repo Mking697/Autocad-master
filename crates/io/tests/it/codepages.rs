@@ -96,10 +96,12 @@ fn utf8_wins_when_valid() {
     assert_eq!(names(&d).0, "Слой");
 }
 
-/// A code page CADCraft doesn't know (or none) reads as ANSI_1252, as before.
+/// A code page CADCraft doesn't know (or none) reads as ANSI_1252, as before. `ANSI_1361`
+/// (Johab) is now a known code page (see `cadcraft_dxf::codepage`), so it is no longer in this
+/// fallback list.
 #[test]
 fn unknown_code_page_falls_back_to_ansi_1252() {
-    for cp in ["ANSI_1361", "EBCDIC", "", "\u{1}"] {
+    for cp in ["GB18030", "EBCDIC", "", "\u{1}"] {
         let d = cadcraft_io::read_dxf(&ascii_dxf("AC1015", cp, b"Caf\xE9", b"B", b"\x80 \xD8")).unwrap();
         assert_eq!(names(&d), ("Café".into(), "B".into(), "€ Ø".into()), "{cp:?}");
     }
@@ -159,7 +161,9 @@ fn binary_dxf_honours_the_code_page() {
     // A short Cyrillic string that is also valid UTF-8 (D1 B2) is still read in the code page.
     assert_eq!(read(&bin("AC1015", "ANSI_1251", b"\xD1\xB2")), "СІ");
     assert_eq!(read(&bin("AC1021", "ANSI_1251", "Привет".as_bytes())), "Привет");
-    assert_eq!(read(&bin("AC1015", "ANSI_1361", b"Caf\xE9")), "Café");
+    // Johab (ANSI_1361) decodes modern Hangul syllable pairs; a lone byte with no partner in
+    // the lead range (0x84-0xD3) is an unassigned code, replaced like any other.
+    assert_eq!(read(&bin("AC1015", "ANSI_1361", b"Caf\xE9")), "Caf\u{FFFD}");
 }
 
 /// Truncated and invalid multibyte sequences become U+FFFD; nothing panics and the structure of

@@ -157,6 +157,43 @@ fn booleans_on_separate_and_nested_regions() {
     assert!(s.execute("subtract", &json!({"from": [a.hex()], "remove": [a.hex()]})).is_err());
 }
 
+/// #F21: UNION, SUBTRACT and INTERSECT of regions whose boundaries touch along one whole
+/// shared edge (adjacent squares) without crossing into each other's interior.
+#[test]
+fn booleans_on_regions_sharing_one_edge() {
+    // UNION of two abutting unit squares merges into one rectangle: the shared wall at x=1
+    // disappears, leaving one outer loop of double the area.
+    let mut s = Session::new();
+    let a = rect_region(&mut s, [0.0, 0.0], [1.0, 1.0]);
+    let b = rect_region(&mut s, [1.0, 0.0], [2.0, 1.0]);
+    s.execute("union", &json!({"handles": [a.hex(), b.hex()]})).unwrap();
+    let r = region(&s, a);
+    assert_eq!(r.loops.len(), 1, "{r:?}");
+    assert!(near(r.area(), 2.0), "{}", r.area());
+    assert!(r.contains(Vec2::new(0.5, 0.5)) && r.contains(Vec2::new(1.5, 0.5)), "both halves are inside the merged outline");
+    assert!(s.doc().unwrap().entity(b).is_none(), "the second square is absorbed");
+
+    // SUBTRACT of a region that only touches along an edge removes nothing: the boundary and
+    // area are unchanged, and the subtracted region is still erased.
+    let mut s = Session::new();
+    let a = rect_region(&mut s, [0.0, 0.0], [2.0, 2.0]);
+    let b = rect_region(&mut s, [2.0, 0.0], [3.0, 2.0]);
+    s.execute("subtract", &json!({"from": [a.hex()], "remove": [b.hex()]})).unwrap();
+    let r = region(&s, a);
+    assert_eq!(r.loops.len(), 1, "{r:?}");
+    assert!(near(r.area(), 4.0), "{}", r.area());
+    assert!(r.contains(Vec2::new(1.0, 1.0)));
+    assert!(s.doc().unwrap().entity(b).is_none());
+
+    // INTERSECT of two regions that only touch along an edge shares no area: nothing to keep.
+    let mut s = Session::new();
+    let a = rect_region(&mut s, [0.0, 0.0], [1.0, 1.0]);
+    let b = rect_region(&mut s, [1.0, 0.0], [2.0, 1.0]);
+    let result = s.execute("intersect", &json!({"handles": [a.hex(), b.hex()]})).unwrap();
+    assert!(result["handle"].is_null(), "{result}");
+    assert_eq!(s.doc().unwrap().model.len(), 0);
+}
+
 #[test]
 fn subtract_on_the_command_line() {
     let mut s = Session::new();

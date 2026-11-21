@@ -28,6 +28,7 @@ pub mod hatchdlg;
 mod mtext_editor;
 mod panel_state;
 pub mod spacemouse;
+pub mod tolerancedlg;
 pub mod workspace_manager;
 pub mod workspaces;
 // The External References palette.

@@ -461,6 +461,12 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             crate::hatchdlg::open_edit(app);
             Ok(Value::Null)
         }
+        // Typed or from the Dimension menu (no parameters): the Geometric Tolerance dialog.
+        // -TOLERANCE and JSON calls keep the command-line prompt sequence and the JSON form.
+        "tolerance" | "tol" if params.is_null() => {
+            crate::tolerancedlg::open(app);
+            Ok(Value::Null)
+        }
         "properties" | "pr" | "props" | "ch" if params.is_null() => {
             crate::docking::command(app, false, &json!({"operation":"open", "panel":"properties"}))
         }

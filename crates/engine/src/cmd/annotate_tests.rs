@@ -575,3 +575,80 @@ fn linetype_rename_updates_references() {
     assert!(s.execute("rename", &json!({ "table": "linetype", "from": "ByLayer", "to": "X" })).is_err());
     assert_eq!(s.doc().unwrap().entity(by_layer).unwrap().common.linetype, "ByLayer");
 }
+
+/// LEADER/QLEADER at the command line: points, then the annotation type. Mtext is the default.
+#[test]
+fn leader_command_line_mtext_annotation() {
+    let mut s = Session::new();
+    s.cmdline("leader").unwrap();
+    assert_eq!(s.current_prompt().unwrap().message, "Specify leader start point");
+    s.cmdline("0,0").unwrap();
+    s.cmdline("5,0").unwrap();
+    s.cmdline("").unwrap(); // Enter: done picking points
+    assert!(s.current_prompt().unwrap().message.contains("annotation type"));
+    s.cmdline("mtext").unwrap();
+    s.cmdline("Note").unwrap();
+    assert!(s.running.is_none());
+    let d = s.doc().unwrap();
+    assert_eq!(d.model.iter().filter(|e| matches!(e.kind, EntityKind::Leader(_))).count(), 1);
+    let texts: Vec<&str> = d.model.iter().filter_map(|e| if let EntityKind::MText(m) = &e.kind { Some(m.contents.as_str()) } else { None }).collect();
+    assert_eq!(texts, ["Note"]);
+}
+
+/// QLEADER shares LEADER's characteristic/value/datum prompts and frame builder,
+/// ending in a frame-bearing leader.
+#[test]
+fn qleader_tolerance_annotation_produces_a_frame_bearing_leader() {
+    let mut s = Session::new();
+    s.cmdline("qleader").unwrap();
+    s.cmdline("0,0").unwrap();
+    s.cmdline("5,0").unwrap();
+    s.cmdline("").unwrap();
+    s.cmdline("tolerance").unwrap();
+    assert!(s.current_prompt().unwrap().message.contains("characteristic"));
+    s.cmdline("flatness").unwrap();
+    s.cmdline("0.1").unwrap();
+    s.cmdline("").unwrap(); // no second tolerance value
+    s.cmdline("A").unwrap(); // first datum
+    s.cmdline("").unwrap(); // no more datums
+    assert!(s.running.is_none());
+    let d = s.doc().unwrap();
+    assert_eq!(d.model.iter().filter(|e| matches!(e.kind, EntityKind::Leader(_))).count(), 1);
+    let frames: Vec<&str> =
+        d.model.iter().filter_map(|e| if let EntityKind::Tolerance(t) = &e.kind { Some(t.text.as_str()) } else { None }).collect();
+    assert_eq!(frames.len(), 1, "a feature control frame landed next to the leader");
+    assert!(frames[0].contains('A'), "the datum reference is in the frame: {frames:?}");
+}
+
+/// An empty feature control frame on LEADER's annotation is rejected the same way TOLERANCE
+/// itself rejects it, and the command keeps running so the user can answer again.
+#[test]
+fn leader_tolerance_annotation_rejects_an_empty_frame() {
+    let mut s = Session::new();
+    s.cmdline("leader").unwrap();
+    s.cmdline("0,0").unwrap();
+    s.cmdline("5,0").unwrap();
+    s.cmdline("").unwrap();
+    s.cmdline("tolerance").unwrap();
+    s.cmdline("none").unwrap(); // no characteristic
+    s.cmdline("none").unwrap(); // no first tolerance
+    s.cmdline("none").unwrap(); // no second tolerance
+    s.cmdline("none").unwrap(); // no datum either: the frame would be empty
+    assert!(s.running.is_some(), "LEADER keeps running so the frame can be filled in");
+    assert_eq!(s.doc().unwrap().model.iter().filter(|e| matches!(e.kind, EntityKind::Leader(_))).count(), 0, "no orphan leader was left behind");
+}
+
+/// LEADER's annotation type None leaves a plain leader with no text or frame.
+#[test]
+fn leader_annotation_type_none_leaves_a_plain_leader() {
+    let mut s = Session::new();
+    s.cmdline("leader").unwrap();
+    s.cmdline("0,0").unwrap();
+    s.cmdline("5,0").unwrap();
+    s.cmdline("").unwrap();
+    s.cmdline("none").unwrap();
+    assert!(s.running.is_none());
+    let d = s.doc().unwrap();
+    assert_eq!(d.model.iter().count(), 1);
+    assert!(matches!(d.model.iter().next().unwrap().kind, EntityKind::Leader(_)));
+}

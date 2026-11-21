@@ -93,10 +93,22 @@ fn leader_tolerance_rotation_and_undo_redo() {
     assert!(s.doc().unwrap().entity(hs[1]).is_some());
 }
 
-/// QLEADER remains outside this bounded LEADER JSON change.
+/// Both JSON and interactive QLEADER use LEADER's shared tolerance-content implementation.
 #[test]
-fn qleader_command_does_not_exist_in_this_codebase() {
+fn qleader_has_json_and_interactive_tolerance_content() {
     let mut s = Session::new();
-    let err = s.execute("qleader", &json!({ "points": [[0, 0], [1, 0]] })).unwrap_err();
-    assert!(err.to_string().to_ascii_lowercase().contains("unknown") || err.to_string().to_ascii_lowercase().contains("not found"), "{err}");
+    let hs = h(&s.execute("qleader", &json!({"points": [[2, 0], [3, 0]], "tolerance": {"symbol": "flatness", "tol1": "0.1"}})).unwrap());
+    assert_eq!(hs.len(), 2);
+    s.cmdline("qleader").unwrap();
+    assert_eq!(s.running.as_ref().map(|r| r.id.as_str()), Some("qleader"));
+    s.cmdline("0,0").unwrap();
+    s.cmdline("1,0").unwrap();
+    s.cmdline("").unwrap();
+    s.cmdline("tolerance").unwrap();
+    s.cmdline("flatness").unwrap();
+    s.cmdline("0.1").unwrap();
+    s.cmdline("").unwrap();
+    s.cmdline("").unwrap();
+    assert!(s.running.is_none());
+    assert!(s.doc().unwrap().model.iter().any(|e| matches!(e.kind, EntityKind::Tolerance(_))));
 }

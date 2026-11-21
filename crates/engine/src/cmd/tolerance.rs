@@ -129,36 +129,51 @@ fn make(style: String, at: Vec2, rotation: f64, text: String) -> Tolerance {
     Tolerance { insert: v3(at), dir: Vec2::from_angle(rotation).to3(0.0), style, text }
 }
 
-/// Builds a feature-control-frame `Tolerance` entity from tolerance-content JSON — the same
-/// fields TOLERANCE itself takes (`symbol`, `tol1`, `tol2`, `datums`, `line2`, `height`,
-/// `projected`, `datumId`, `style`, `text`), minus `at` (given separately here). Lets
-/// LEADER end in a feature control frame, reusing this module's frame geometry and symbols.
-/// This is JSON command wiring only; it does not add QLEADER or interactive leader prompts.
-/// `cmd` is the caller's command id, used in validation errors.
-pub(crate) fn leader_tolerance(cmd: &str, s: &Session, p: &Value, at: Vec2, rotation: f64) -> Result<EntityKind> {
-    let text = frame_text(p)?;
+/// The shared frame-builder: validates `text` isn't an empty feature control frame and `style`
+/// names a real dimension style (falling back to the drawing's current one), then builds the
+/// `Tolerance` entity. Every caller that ends in a feature control frame goes through this one
+/// check — the Geometric Tolerance dialog (JSON `text`/fields through `tolerance` itself),
+/// TOLERANCE's own command-line prompts ([`ToleranceM`]) and LEADER/QLEADER's tolerance
+/// annotation ([`leader_tolerance`], [`frame_from_lines`]). `cmd` is the caller's command id,
+/// used in validation errors.
+pub(crate) fn frame_from_text(cmd: &str, s: &Session, text: String, style: Option<String>, at: Vec2, rotation: f64) -> Result<EntityKind> {
     if cadcraft_doc::parse_frame(&text).iter().flatten().all(cadcraft_doc::compartment_is_empty) {
         return Err(bad(cmd, "the feature control frame is empty"));
     }
-    let style = str_param(p, "style").map(str::to_string).unwrap_or_else(|| current_dimstyle(s));
+    let style = style.unwrap_or_else(|| current_dimstyle(s));
     if s.doc()?.dim_style(&style).is_none() {
         return Err(bad(cmd, format!("no dimension style `{style}`")));
     }
     Ok(EntityKind::Tolerance(make(style, at, rotation, text)))
 }
 
+/// [`frame_from_text`] from assembled `GdtLine`s instead of an already-composed string: builds
+/// the frame text with [`cadcraft_doc::compose_frame`] (the same composer TOLERANCE's JSON form
+/// and command-line prompts use) before validating it. Used by LEADER/QLEADER's command-line
+/// tolerance annotation, which only offers a single frame line (as TOLERANCE's own command-line
+/// prompts do; the richer `line2`/`height`/`projected`/`datumId` fields are JSON/dialog-only).
+pub(crate) fn frame_from_lines(cmd: &str, s: &Session, lines: Vec<GdtLine>, at: Vec2, rotation: f64) -> Result<EntityKind> {
+    let text = cadcraft_doc::compose_frame(&GdtFrame { lines, ..Default::default() });
+    frame_from_text(cmd, s, text, None, at, rotation)
+}
+
+/// Builds a feature-control-frame `Tolerance` entity from tolerance-content JSON — the same
+/// fields TOLERANCE itself takes (`symbol`, `tol1`, `tol2`, `datums`, `line2`, `height`,
+/// `projected`, `datumId`, `style`, `text`), minus `at` (given separately here). Lets
+/// LEADER end in a feature control frame, reusing this module's frame geometry and symbols.
+/// `cmd` is the caller's command id, used in validation errors.
+pub(crate) fn leader_tolerance(cmd: &str, s: &Session, p: &Value, at: Vec2, rotation: f64) -> Result<EntityKind> {
+    let text = frame_text(p)?;
+    frame_from_text(cmd, s, text, str_param(p, "style").map(str::to_string), at, rotation)
+}
+
 fn run_tolerance(s: &mut Session, p: &Value) -> Result<Value> {
     let at = point_req("tolerance", p, "at")?;
     let text = frame_text(p)?;
-    if cadcraft_doc::parse_frame(&text).iter().flatten().all(cadcraft_doc::compartment_is_empty) {
-        return Err(bad("tolerance", "the feature control frame is empty"));
-    }
-    let style = str_param(p, "style").map(str::to_string).unwrap_or_else(|| current_dimstyle(s));
-    if s.doc()?.dim_style(&style).is_none() {
-        return Err(bad("tolerance", format!("no dimension style `{style}`")));
-    }
-    let t = make(style, at, f64_or(p, "rotation", 0.0).to_radians(), text.clone());
-    let h = s.add_entity(EntityKind::Tolerance(t))?;
+    let rotation = f64_or(p, "rotation", 0.0).to_radians();
+    let style = str_param(p, "style").map(str::to_string);
+    let frame = frame_from_text("tolerance", s, text.clone(), style, at, rotation)?;
+    let h = s.add_entity(frame)?;
     Ok(json!({ "handle": h.hex(), "text": text }))
 }
 
@@ -170,7 +185,8 @@ struct ToleranceM {
     style: String,
 }
 
-const SYMBOL_KW: &[&str] = &[
+/// Shared with LEADER/QLEADER's command-line tolerance annotation ([`super::annotate::LeaderM`]).
+pub(crate) const SYMBOL_KW: &[&str] = &[
     "POsition",
     "COncentricity",
     "SYmmetry",
@@ -188,8 +204,9 @@ const SYMBOL_KW: &[&str] = &[
     "None",
 ];
 
-/// Free input split at spaces, Enter meaningful.
-const VALUE: Accept = Accept { point: false, number: false, text: false, select: false, enter: true };
+/// Free input split at spaces, Enter meaningful. Shared with LEADER/QLEADER's tolerance
+/// annotation ([`super::annotate::LeaderM`]).
+pub(crate) const VALUE: Accept = Accept { point: false, number: false, text: false, select: false, enter: true };
 
 impl ToleranceM {
     fn new(s: &Session) -> Self {
@@ -273,8 +290,8 @@ impl Interactive for ToleranceM {
             }
             _ => match i {
                 Input::Point(p) => {
-                    let t = make(self.style.clone(), p, 0.0, self.text());
-                    s.add_entity(EntityKind::Tolerance(t))?;
+                    let frame = frame_from_text("tolerance", s, self.text(), Some(self.style.clone()), p, 0.0)?;
+                    s.add_entity(frame)?;
                     return Ok(Step::Done);
                 }
                 Input::Enter => return Ok(Step::Cancel),

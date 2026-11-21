@@ -75,7 +75,12 @@ pub fn specs() -> Vec<CommandSpec> {
             .interactive(|s| Ok(Box::new(MLeaderM::new(s)))),
         CommandSpec::new("leader", "Leader", run_leader)
             .alias(&["lead"])
-            .params("{points: [[x,y]...], text? | tolerance?: {symbol?, tol1?, tol2?, datums?, line2?, height?, projected?, datumId?, style?, text?, rotation? (degrees)}} (text and tolerance are mutually exclusive)"),
+            .params("{points: [[x,y]...], text? | tolerance?: {symbol?, tol1?, tol2?, datums?, line2?, height?, projected?, datumId?, style?, text?, rotation? (degrees)}} (text and tolerance are mutually exclusive)")
+            .interactive(|_| Ok(Box::new(LeaderM::new()))),
+        CommandSpec::new("qleader", "Quick Leader", run_leader)
+            .alias(&["qlead"])
+            .params("{points: [[x,y]...], text? | tolerance?: {symbol?, tol1?, tol2?, datums?, line2?, height?, projected?, datumId?, style?, text?, rotation?}}")
+            .interactive(|_| Ok(Box::new(LeaderM::new()))),
         CommandSpec::new("dimstyle.update", "Update", run_update)
             .menu(&["Dimension", "Update"])
             .params("{handles?}")
@@ -528,6 +533,231 @@ fn run_leader(s: &mut Session, p: &Value) -> Result<Value> {
         );
     }
     Ok(json!({ "handles": out }))
+}
+
+/// LEADER/QLEADER at the command line: points, then an annotation type (Mtext, Tolerance or
+/// None). Tolerance reuses TOLERANCE's own characteristic/value/datum prompts
+/// ([`super::tolerance::SYMBOL_KW`], [`super::tolerance::VALUE`], [`super::tolerance::parse_tol`],
+/// [`super::tolerance::parse_datum`]) and frame builder ([`super::tolerance::frame_from_lines`]):
+/// no parsing or frame geometry is duplicated here.
+struct LeaderM {
+    pts: Vec<Vec2>,
+    phase: LeaderPhase,
+    line: cadcraft_doc::GdtLine,
+    mtext: String,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum LeaderPhase {
+    Points,
+    AnnotationType,
+    ToleranceSymbol,
+    ToleranceTol1,
+    ToleranceTol2,
+    ToleranceDatum(u8),
+    Mtext,
+}
+
+/// LEADER's annotation-type keywords (AutoCAD's own TOLERANCE/MTEXT/NONE choices; COPY/BLOCK
+/// are not offered yet).
+const ANNOTATION_KW: &[&str] = &["Tolerance", "Mtext", "None"];
+
+impl LeaderM {
+    fn new() -> Self {
+        LeaderM {
+            pts: Vec::new(),
+            phase: LeaderPhase::Points,
+            line: cadcraft_doc::GdtLine { symbol: Some(cadcraft_doc::GdtSymbol::Position), ..Default::default() },
+            mtext: String::new(),
+        }
+    }
+    /// The last point entered, where the annotation lands.
+    fn at(&self) -> Result<Vec2> {
+        self.pts.last().copied().ok_or_else(|| bad("leader", "need a landing point"))
+    }
+    fn add_leader(&self, s: &mut Session) -> Result<Handle> {
+        s.add_entity(EntityKind::Leader(cadcraft_doc::Leader {
+            vertices: self.pts.iter().map(|q| v3(*q)).collect(),
+            arrow: true,
+            spline: false,
+            style: style(s),
+        }))
+    }
+    fn finish_tolerance(&mut self, s: &mut Session) -> Result<Step> {
+        let at = self.at()?;
+        // Validate the frame before adding the leader, so invalid content leaves nothing behind.
+        let frame = super::tolerance::frame_from_lines("leader", s, vec![self.line.clone()], at, 0.0)?;
+        self.add_leader(s)?;
+        s.add_entity(frame)?;
+        Ok(Step::Done)
+    }
+    fn finish_mtext(&mut self, s: &mut Session) -> Result<Step> {
+        let at = self.at()?;
+        self.add_leader(s)?;
+        if !self.mtext.trim().is_empty() {
+            let st = style(s);
+            let th = s.doc()?.dim_style(&st).map(|d| d.text_height).unwrap_or(0.18);
+            s.add_entity(EntityKind::MText(MText {
+                insert: v3(at + Vec2::new(th * 0.5, th * 0.5)),
+                height: th,
+                width: 0.0,
+                attach: 4,
+                rotation: 0.0,
+                style: "Standard".into(),
+                contents: self.mtext.clone(),
+                line_spacing: 1.0,
+                line_spacing_exact: false,
+                columns: None,
+            }))?;
+        }
+        Ok(Step::Done)
+    }
+    fn finish_none(&mut self, s: &mut Session) -> Result<Step> {
+        self.at()?;
+        self.add_leader(s)?;
+        Ok(Step::Done)
+    }
+}
+
+/// Free text split into a trimmed `Some` (never for a bare Enter).
+fn typed(i: &Input) -> Option<String> {
+    match i {
+        Input::Text(t) | Input::Keyword(t) => Some(t.trim().to_string()),
+        _ => None,
+    }
+}
+
+impl Interactive for LeaderM {
+    fn name(&self) -> &'static str {
+        "LEADER"
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        match self.phase {
+            LeaderPhase::Points if self.pts.is_empty() => Prompt::new("Specify leader start point", Accept::POINT),
+            LeaderPhase::Points if self.pts.len() == 1 => Prompt::new("Specify next point", Accept::POINT),
+            LeaderPhase::Points => Prompt::new("Specify next point", Accept::POINT).base_opt(self.pts.last().copied()),
+            LeaderPhase::AnnotationType => Prompt::new("Enter leader annotation type", super::tolerance::VALUE).kw(ANNOTATION_KW).default("Mtext"),
+            LeaderPhase::ToleranceSymbol => {
+                Prompt::new("Enter geometric characteristic", super::tolerance::VALUE).kw(super::tolerance::SYMBOL_KW).default("Position")
+            }
+            LeaderPhase::ToleranceTol1 => Prompt::new("Enter first tolerance value", super::tolerance::VALUE).default("none"),
+            LeaderPhase::ToleranceTol2 => Prompt::new("Enter second tolerance value", super::tolerance::VALUE).default("none"),
+            LeaderPhase::ToleranceDatum(n) => Prompt::new(format!("Enter datum reference {n}"), super::tolerance::VALUE).default("none"),
+            LeaderPhase::Mtext => Prompt::new("Enter leader text", Accept::TEXT),
+        }
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        if i == Input::Cancel {
+            return Ok(Step::Cancel);
+        }
+        match self.phase {
+            LeaderPhase::Points => match i {
+                Input::Point(p) => {
+                    self.pts.push(p);
+                    s.last_point = p;
+                    Ok(Step::Continue)
+                }
+                Input::Enter if self.pts.len() >= 2 => {
+                    self.phase = LeaderPhase::AnnotationType;
+                    Ok(Step::Continue)
+                }
+                Input::Enter => Ok(Step::Continue),
+                _ => Ok(Step::Continue),
+            },
+            LeaderPhase::AnnotationType => {
+                let text = typed(&i);
+                match (&i, text.as_deref()) {
+                    (Input::Enter, _) => {
+                        self.phase = LeaderPhase::Mtext;
+                        Ok(Step::Continue)
+                    }
+                    (_, Some(t)) if t.eq_ignore_ascii_case("mtext") => {
+                        self.phase = LeaderPhase::Mtext;
+                        Ok(Step::Continue)
+                    }
+                    (_, Some(t)) if t.eq_ignore_ascii_case("tolerance") => {
+                        self.phase = LeaderPhase::ToleranceSymbol;
+                        Ok(Step::Continue)
+                    }
+                    (_, Some(t)) if t.eq_ignore_ascii_case("none") => self.finish_none(s),
+                    _ => {
+                        s.echo("Enter Tolerance, Mtext or None.");
+                        Ok(Step::Continue)
+                    }
+                }
+            }
+            LeaderPhase::ToleranceSymbol => {
+                let text = typed(&i);
+                match (&i, text.as_deref()) {
+                    (Input::Enter, _) => {}
+                    (_, Some(t)) if t.eq_ignore_ascii_case("none") => self.line.symbol = None,
+                    (_, Some(t)) => match cadcraft_doc::GdtSymbol::parse(t).filter(|g| g.is_characteristic()) {
+                        Some(g) => self.line.symbol = Some(g),
+                        None => {
+                            s.echo("Requires a geometric characteristic or None.");
+                            return Ok(Step::Continue);
+                        }
+                    },
+                    _ => return Ok(Step::Continue),
+                }
+                self.phase = LeaderPhase::ToleranceTol1;
+                Ok(Step::Continue)
+            }
+            LeaderPhase::ToleranceTol1 | LeaderPhase::ToleranceTol2 => {
+                if !matches!(i, Input::Enter | Input::Text(_) | Input::Keyword(_)) {
+                    return Ok(Step::Continue);
+                }
+                let text = typed(&i);
+                let none = text.as_deref().is_none_or(|t| t.is_empty() || t.eq_ignore_ascii_case("none"));
+                let v = (!none).then(|| super::tolerance::parse_tol(text.as_deref().unwrap_or("")));
+                if self.phase == LeaderPhase::ToleranceTol1 {
+                    self.line.tol1 = v;
+                    self.phase = LeaderPhase::ToleranceTol2;
+                } else {
+                    self.line.tol2 = v;
+                    self.phase = LeaderPhase::ToleranceDatum(1);
+                }
+                Ok(Step::Continue)
+            }
+            LeaderPhase::ToleranceDatum(n) => {
+                if !matches!(i, Input::Enter | Input::Text(_) | Input::Keyword(_)) {
+                    return Ok(Step::Continue);
+                }
+                let text = typed(&i);
+                let none = text.as_deref().is_none_or(|t| t.is_empty() || t.eq_ignore_ascii_case("none"));
+                if none {
+                    return self.finish_tolerance(s);
+                }
+                self.line.datums.push(super::tolerance::parse_datum(text.as_deref().unwrap_or("")));
+                if n >= 3 {
+                    return self.finish_tolerance(s);
+                }
+                self.phase = LeaderPhase::ToleranceDatum(n + 1);
+                Ok(Step::Continue)
+            }
+            LeaderPhase::Mtext => match i {
+                Input::Text(t) => {
+                    self.mtext = t;
+                    self.finish_mtext(s)
+                }
+                Input::Enter => self.finish_mtext(s),
+                _ => Ok(Step::Continue),
+            },
+        }
+    }
+    fn preview(&self, _s: &Session, c: Vec2) -> Vec<EntityKind> {
+        if matches!(self.phase, LeaderPhase::Points) && !self.pts.is_empty() {
+            let mut pts = self.pts.clone();
+            pts.push(c);
+            return vec![EntityKind::Leader(cadcraft_doc::Leader {
+                vertices: pts.iter().map(|q| v3(*q)).collect(),
+                arrow: true,
+                spline: false,
+                style: String::new(),
+            })];
+        }
+        Vec::new()
+    }
 }
 
 fn run_update(s: &mut Session, p: &Value) -> Result<Value> {

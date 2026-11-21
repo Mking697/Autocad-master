@@ -4,7 +4,8 @@
 
 use std::sync::Arc;
 
-use cadcraft_doc::{Attrib, Block, EntityKind, EntityStore, Handle};
+use cadcraft_doc::{Attrib, AttribModes, Block, Entity, EntityKind, EntityStore, Handle, MText, mtext_literal};
+use cadcraft_geom::Vec2;
 use serde_json::{Value, json};
 
 use super::attribs::{blocks_with_attdefs, has_attdefs, reference_count, rename_tag, sync};
@@ -16,7 +17,7 @@ pub(super) fn battman_spec() -> CommandSpec {
     CommandSpec::new("battman", "Block Attribute Manager...", run)
         .menu(&["Modify", "Object", "Attribute", "Block Attribute Manager..."])
         .params(
-            "{name, action?: \"list\" (default) | \"edit\" | \"remove\" | \"up\" | \"down\" | \"order\" | \"sync\", tag? (the definition to edit, remove or move; any case), newTag?, prompt?, default?, invisible?, constant?, height?, layer?, order?: [every tag, in the new order], sync?: bool (default true: existing references follow, as with ATTSYNC)} → {block, attributes: [{tag, prompt, default, invisible, constant, height, layer}], references, synced?}",
+            "{name, action?: \"list\" (default) | \"add\" | \"edit\" | \"remove\" | \"up\" | \"down\" | \"order\" | \"sync\", tag? (the definition to edit, remove or move; any case; required to create one with \"add\"), newTag?, prompt?, default?, invisible?, constant?, height?, layer?, multiline?: bool (switch to/from a multiline default value; \"add\" may create one directly), width? (multiline reference rectangle width; 0 = no wrapping), at?: [x,y] (\"add\" only; defaults below the lowest existing definition), order?: [every tag, in the new order], sync?: bool (default true: existing references follow, as with ATTSYNC)} → {block, attributes: [{tag, prompt, default, invisible, constant, height, layer, multiline}], references, synced?}",
         )
         .interactive(|s| Ok(Box::new(BattmanM::new(s))))
 }
@@ -31,6 +32,11 @@ struct Change {
     constant: Option<bool>,
     height: Option<f64>,
     layer: Option<String>,
+    /// `Some(true)`: make (or keep) the definition multiline; `Some(false)`: make (or keep) it
+    /// single-line. `None` leaves it as it is.
+    multiline: Option<bool>,
+    /// A multiline definition's reference rectangle width, applied whenever present.
+    width: Option<f64>,
 }
 
 /// The attribute definitions of `b` in order: handle, definition, layer.
@@ -63,7 +69,7 @@ fn listing(s: &Session, name: &str) -> Result<Value> {
     let atts: Vec<Value> = defs(&b)
         .into_iter()
         .map(|(_, a, layer)| {
-            json!({"tag": a.tag, "prompt": a.prompt, "default": a.text.value, "invisible": a.invisible, "constant": a.constant, "height": a.text.height, "layer": layer})
+            json!({"tag": a.tag, "prompt": a.prompt, "default": a.text.value, "invisible": a.invisible, "constant": a.constant, "height": a.text.height, "layer": layer, "multiline": a.multiline.is_some()})
         })
         .collect();
     Ok(json!({ "block": b.name, "attributes": atts, "references": reference_count(s.doc()?, &b.name) }))
@@ -88,6 +94,26 @@ fn valid_tag(tag: &str) -> Result<String> {
     Ok(t.to_ascii_uppercase())
 }
 
+/// A multiline attribute's text (DXF type 2/4) built from a plain `Text`: the reference rectangle
+/// width defaults to 0 (no wrapping) when `width` is absent, zero or not finite.
+fn make_multiline(text: &cadcraft_doc::Text, width: Option<f64>) -> cadcraft_doc::MultilineAttrib {
+    cadcraft_doc::MultilineAttrib {
+        mtext: MText {
+            insert: text.insert,
+            height: text.height,
+            width: width.filter(|w| w.is_finite() && *w > 0.0).unwrap_or(0.0),
+            attach: 1,
+            rotation: text.rotation,
+            style: text.style.clone(),
+            contents: mtext_literal(&text.value),
+            line_spacing: 1.0,
+            line_spacing_exact: false,
+            columns: None,
+        },
+        read_as: text.value.clone(),
+    }
+}
+
 /// Apply `c` to the definition tagged `tag` of block `name`. Returns the tag it has afterwards.
 fn edit(s: &mut Session, name: &str, tag: &str, c: &Change) -> Result<String> {
     let new_tag = c.tag.as_deref().map(valid_tag).transpose()?;
@@ -95,6 +121,11 @@ fn edit(s: &mut Session, name: &str, tag: &str, c: &Change) -> Result<String> {
         && !(h.is_finite() && h > 0.0)
     {
         return Err(EngineError::Other("The text height must be a positive number.".into()));
+    }
+    if let Some(w) = c.width
+        && !(w.is_finite() && w >= 0.0)
+    {
+        return Err(EngineError::Other("The multiline width must be zero or a positive number.".into()));
     }
     let layer = match &c.layer {
         Some(l) => {
@@ -132,6 +163,19 @@ fn edit(s: &mut Session, name: &str, tag: &str, c: &Change) -> Result<String> {
                 }
                 if let Some(v) = c.height {
                     a.text.height = v;
+                    if let Some(ml) = &mut a.multiline {
+                        ml.mtext.height = v;
+                    }
+                }
+                match c.multiline {
+                    Some(true) if a.multiline.is_none() => a.multiline = Some(make_multiline(&a.text, c.width)),
+                    Some(false) => a.multiline = None,
+                    _ => {}
+                }
+                if let Some(w) = c.width
+                    && let Some(ml) = &mut a.multiline
+                {
+                    ml.mtext.width = w;
                 }
                 result = a.tag.clone();
             }
@@ -139,6 +183,89 @@ fn edit(s: &mut Session, name: &str, tag: &str, c: &Change) -> Result<String> {
         Ok(())
     })?;
     Ok(result)
+}
+
+/// Create a new attribute definition tagged `tag` in block `name`; `at` defaults to a point below
+/// the lowest existing definition (or the origin, when there are none). Returns the stored tag.
+#[allow(clippy::too_many_arguments)]
+fn add(
+    s: &mut Session,
+    name: &str,
+    tag: &str,
+    prompt: &str,
+    default: &str,
+    height: Option<f64>,
+    invisible: bool,
+    constant: bool,
+    layer: Option<&str>,
+    multiline: bool,
+    width: Option<f64>,
+    at: Option<Vec2>,
+) -> Result<String> {
+    let tag = valid_tag(tag)?;
+    let h = height.unwrap_or_else(|| s.doc().map(|d| d.header.f64("TEXTSIZE", 0.2)).unwrap_or(0.2));
+    if !(h.is_finite() && h > 0.0) {
+        return Err(EngineError::Other("The text height must be a positive number.".into()));
+    }
+    if let Some(w) = width
+        && !(w.is_finite() && w >= 0.0)
+    {
+        return Err(EngineError::Other("The multiline width must be zero or a positive number.".into()));
+    }
+    let layer = match layer {
+        Some(l) => {
+            Some(s.doc()?.layer(l.trim()).map(|l| l.name.clone()).ok_or_else(|| EngineError::Other(format!("Layer \"{}\" not found.", l.trim())))?)
+        }
+        None => None,
+    };
+    let b = block(s, name)?;
+    if defs(&b).iter().any(|(_, a, _)| a.tag.eq_ignore_ascii_case(&tag)) {
+        return Err(EngineError::Other(format!("Block \"{}\" already has an attribute tagged \"{tag}\".", b.name)));
+    }
+    let placed = at.filter(|p| p.is_finite()).unwrap_or_else(|| {
+        let ys: Vec<(f64, f64)> = defs(&b).into_iter().map(|(_, a, _)| (a.text.insert.x, a.text.insert.y)).collect();
+        ys.into_iter().min_by(|a, b| a.1.total_cmp(&b.1)).map(|(x, y)| Vec2::new(x, y - h * 1.5)).unwrap_or(Vec2::new(0.0, 0.0))
+    });
+    if !placed.is_finite() {
+        return Err(bad("battman", "attribute position must be finite"));
+    }
+    let mut attrib = Attrib {
+        tag: tag.clone(),
+        text: cadcraft_doc::Text {
+            insert: cadcraft_geom::Vec3::new(placed.x, placed.y, 0.0),
+            align_pt: None,
+            height: h,
+            value: default.to_string(),
+            rotation: 0.0,
+            width_factor: 1.0,
+            oblique: 0.0,
+            style: s.doc().map(|d| d.header.str("TEXTSTYLE", "Standard")).unwrap_or_else(|_| "Standard".into()),
+            halign: cadcraft_doc::HAlign::Left,
+            valign: cadcraft_doc::VAlign::Baseline,
+        },
+        invisible,
+        constant,
+        prompt: prompt.to_string(),
+        props: Default::default(),
+        multiline: None,
+        modes: AttribModes::default(),
+    };
+    if multiline {
+        attrib.multiline = Some(make_multiline(&attrib.text, width));
+    }
+    let handle = s.doc_mut()?.new_handle();
+    update_block(s, name, |b| {
+        if defs(b).iter().any(|(_, a, _)| a.tag.eq_ignore_ascii_case(&tag)) {
+            return Err(EngineError::Other(format!("Block \"{}\" already has an attribute tagged \"{tag}\".", b.name)));
+        }
+        let mut e = Entity::new(handle, EntityKind::AttDef(attrib.clone()));
+        if let Some(l) = &layer {
+            e.common.layer = l.clone();
+        }
+        b.entities.push(e);
+        Ok(())
+    })?;
+    Ok(tag)
 }
 
 /// Put the attribute definitions of `b` in the order `order` (handles of all of them), leaving
@@ -211,6 +338,11 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let name = block(s, &name)?.name.clone();
     let action = str_param(p, "action").unwrap_or("list").to_ascii_lowercase();
     let tag = || str_param(p, "tag").map(str::to_string).ok_or_else(|| bad("battman", format!("`tag` is required for \"{action}\"")));
+    if let Some(v) = p.get("multiline")
+        && !v.is_boolean()
+    {
+        return Err(bad("battman", "`multiline` must be a boolean"));
+    }
     let mut renamed = None;
     match action.as_str() {
         "list" => return listing(s, &name),
@@ -222,6 +354,10 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
                 None | Some(Value::Null) => None,
                 Some(v) => Some(v.as_f64().ok_or_else(|| bad("battman", "`height` must be a number"))?),
             };
+            let width = match p.get("width") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_f64().ok_or_else(|| bad("battman", "`width` must be a number"))?),
+            };
             let c = Change {
                 tag: opt_str("newTag"),
                 prompt: opt_str("prompt"),
@@ -230,10 +366,43 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
                 constant: opt_bool("constant"),
                 height,
                 layer: opt_str("layer"),
+                multiline: opt_bool("multiline"),
+                width,
             };
             let old = tag()?;
             let new = edit(s, &name, &old, &c)?;
             renamed = Some((old, new));
+        }
+        "add" => {
+            let opt_str = |k| str_param(p, k).map(str::to_string);
+            let opt_bool = |k| p.get(k).and_then(Value::as_bool);
+            let height = match p.get("height") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_f64().ok_or_else(|| bad("battman", "`height` must be a number"))?),
+            };
+            let width = match p.get("width") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_f64().ok_or_else(|| bad("battman", "`width` must be a number"))?),
+            };
+            let at = match p.get("at") {
+                None | Some(Value::Null) => None,
+                Some(_) => Some(crate::cmd::point_req("battman", p, "at")?),
+            };
+            let t = tag()?;
+            add(
+                s,
+                &name,
+                &t,
+                opt_str("prompt").as_deref().unwrap_or(&t),
+                opt_str("default").as_deref().unwrap_or(""),
+                height,
+                opt_bool("invisible").unwrap_or(false),
+                opt_bool("constant").unwrap_or(false),
+                opt_str("layer").as_deref(),
+                opt_bool("multiline").unwrap_or(false),
+                width,
+                at,
+            )?;
         }
         "remove" => remove(s, &name, &tag()?)?,
         "up" => shift(s, &name, &tag()?, -1)?,
@@ -248,7 +417,7 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
                 .collect::<Result<_>>()?;
             set_order(s, &name, &tags)?;
         }
-        other => return Err(bad("battman", format!("unknown action \"{other}\" (list, edit, remove, up, down, order or sync)"))),
+        other => return Err(bad("battman", format!("unknown action \"{other}\" (list, add, edit, remove, up, down, order or sync)"))),
     }
     let synced = if action == "sync" || bool_or(p, "sync", true) {
         Some(apply(s, &name, renamed.as_ref().map(|(o, n)| (o.as_str(), n.as_str())))?)
@@ -281,12 +450,14 @@ enum Prop {
     Constant,
     Height,
     Layer,
+    Multiline,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Stage {
     Block,
     Option,
+    NewTag,
     Tag(Op),
     Prop,
     Value(Prop),
@@ -301,8 +472,8 @@ struct BattmanM {
     tag: String,
 }
 
-const OPTIONS: &[&str] = &["Edit", "Remove", "moveUp", "moveDown", "Sync", "List", "eXit"];
-const PROPS: &[&str] = &["Tag", "Prompt", "Default", "Invisible", "Constant", "Height", "Layer", "eXit"];
+const OPTIONS: &[&str] = &["New", "Edit", "Remove", "moveUp", "moveDown", "Sync", "List", "eXit"];
+const PROPS: &[&str] = &["Tag", "Prompt", "Default", "Invisible", "Constant", "Height", "Layer", "Multiline", "eXit"];
 
 impl BattmanM {
     fn new(s: &Session) -> Self {
@@ -398,6 +569,7 @@ impl Interactive for BattmanM {
         match self.stage {
             Stage::Block => Prompt::new("Enter name of block to manage", Accept::TEXT).kw(&["?"]),
             Stage::Option => Prompt::new(format!("Block {}: enter an option", self.block), KW).kw(OPTIONS).default("eXit"),
+            Stage::NewTag => Prompt::new("Enter tag for new attribute", Accept::TEXT),
             Stage::Tag(_) => Prompt::new("Enter attribute tag", Accept::TEXT),
             Stage::Prop => Prompt::new(format!("Attribute {}: enter property to change", self.tag), KW).kw(PROPS).default("eXit"),
             Stage::Value(p) => {
@@ -411,6 +583,9 @@ impl Interactive for BattmanM {
                     Prop::Constant => Prompt::new("Constant?", KW).kw(&["Yes", "No"]).default(yes_no(a.as_ref().is_some_and(|a| a.constant))),
                     Prop::Height => Prompt::new("Specify text height", Accept::NUMBER).default(num(a.as_ref().map_or(0.0, |a| a.text.height))),
                     Prop::Layer => Prompt::new("Enter layer name", Accept::TEXT).default(self.current_layer(s)),
+                    Prop::Multiline => {
+                        Prompt::new("Multiline?", KW).kw(&["Yes", "No"]).default(yes_no(a.as_ref().is_some_and(|a| a.multiline.is_some())))
+                    }
                 }
             }
         }
@@ -428,9 +603,6 @@ impl Interactive for BattmanM {
                 }
                 Input::Text(t) if !t.trim().is_empty() => {
                     let b = block(s, t.trim())?;
-                    if !b.entities.iter().any(|e| matches!(e.kind, EntityKind::AttDef(_))) {
-                        return Err(EngineError::Other(format!("Block \"{}\" has no attribute definitions.", b.name)));
-                    }
                     self.block = b.name.clone();
                     self.stage = Stage::Option;
                     self.list(s)?;
@@ -440,6 +612,7 @@ impl Interactive for BattmanM {
             },
             Stage::Option => match &i {
                 Input::Keyword(k) => match k.as_str() {
+                    "New" => self.stage = Stage::NewTag,
                     "Edit" => self.stage = Stage::Tag(Op::Edit),
                     "Remove" => self.stage = Stage::Tag(Op::Remove),
                     "moveUp" => self.stage = Stage::Tag(Op::Up),
@@ -453,6 +626,17 @@ impl Interactive for BattmanM {
                 },
                 Input::Enter => return Ok(Step::Done),
                 _ => return Err(EngineError::Other("Invalid option keyword.".into())),
+            },
+            Stage::NewTag => match &i {
+                Input::Text(t) if !t.trim().is_empty() => {
+                    let name = self.block.clone();
+                    let new = add(s, &name, t, t.trim(), "", None, false, false, None, false, None, None)?;
+                    apply(s, &name, None)?;
+                    self.tag = new;
+                    self.stage = Stage::Prop;
+                }
+                Input::Enter => self.stage = Stage::Option,
+                _ => {}
             },
             Stage::Tag(op) => match &i {
                 Input::Text(t) if !t.trim().is_empty() => {
@@ -486,6 +670,7 @@ impl Interactive for BattmanM {
                         "Constant" => Stage::Value(Prop::Constant),
                         "Height" => Stage::Value(Prop::Height),
                         "Layer" => Stage::Value(Prop::Layer),
+                        "Multiline" => Stage::Value(Prop::Multiline),
                         _ => Stage::Option,
                     }
                 }
@@ -516,11 +701,185 @@ impl Interactive for BattmanM {
                         Change { height: Some(h), ..Change::default() }
                     }
                     Prop::Layer => Change { layer: Some(text), ..Change::default() },
+                    Prop::Multiline => {
+                        Change { multiline: Some(yes(&i).ok_or_else(|| EngineError::Other("Enter Yes or No.".into()))?), ..Change::default() }
+                    }
                 };
                 self.change(s, c)?;
                 self.stage = Stage::Prop;
             }
         }
         Ok(Step::Continue)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// A session with block TESTBLK: one single-line attribute (NAME) and one reference to it.
+    fn session() -> Session {
+        let mut s = Session::new();
+        let h = s
+            .execute("attdef", &json!({"tag": "name", "prompt": "Name", "default": "John", "at": [0, 0], "height": 0.2}))
+            .expect("attdef")
+            .get("handle")
+            .and_then(Value::as_str)
+            .expect("attdef handle")
+            .to_string();
+        s.execute("block", &json!({"name": "TESTBLK", "base": [0, 0], "handles": [h], "keep": "convert"})).expect("block");
+        s.set_selection(Vec::new());
+        s
+    }
+
+    fn attdef<'a>(b: &'a Block, tag: &str) -> &'a Attrib {
+        defs(b).into_iter().find(|(_, a, _)| a.tag.eq_ignore_ascii_case(tag)).map(|(_, a, _)| a).expect("attdef present")
+    }
+
+    fn insert_attrib<'a>(d: &'a cadcraft_doc::Drawing, tag: &str) -> &'a Attrib {
+        d.model
+            .iter()
+            .find_map(|e| match &e.kind {
+                EntityKind::Insert(i) => i.attribs.iter().find(|a| a.tag.eq_ignore_ascii_case(tag)),
+                _ => None,
+            })
+            .expect("reference attribute present")
+    }
+
+    #[test]
+    fn add_creates_a_multiline_definition_and_its_reference_follows() {
+        let mut s = session();
+        let r = s
+            .execute("battman", &json!({"name": "TESTBLK", "action": "add", "tag": "desc", "default": "Line one\nLine two", "multiline": true}))
+            .expect("add");
+        assert_eq!(r["synced"], json!(1));
+
+        let d = s.doc().unwrap();
+        let b = d.block("TESTBLK").unwrap();
+        let a = attdef(b, "DESC");
+        assert_eq!(a.text.value, "Line one\nLine two");
+        let ml = a.multiline.as_ref().expect("multiline definition");
+        assert_eq!(ml.mtext.contents, mtext_literal("Line one\nLine two"));
+        assert_eq!(ml.read_as, "Line one\nLine two");
+
+        // The existing reference picked up the new attribute, also multiline.
+        let ra = insert_attrib(d, "DESC");
+        assert_eq!(ra.text.value, "Line one\nLine two");
+        assert!(ra.multiline.is_some());
+    }
+
+    #[test]
+    fn add_rejects_a_tag_already_in_use() {
+        let mut s = session();
+        let err = s.execute("battman", &json!({"name": "TESTBLK", "action": "add", "tag": "name"})).unwrap_err();
+        assert!(matches!(err, EngineError::Other(_) | EngineError::BadParams { .. }));
+        // Nothing was duplicated.
+        let d = s.doc().unwrap();
+        let b = d.block("TESTBLK").unwrap();
+        assert_eq!(defs(b).len(), 1);
+    }
+
+    #[test]
+    fn edit_switches_a_single_line_definition_to_multiline_and_back() {
+        let mut s = session();
+
+        s.execute("battman", &json!({"name": "TESTBLK", "action": "edit", "tag": "name", "multiline": true})).expect("to multiline");
+        {
+            let d = s.doc().unwrap();
+            let b = d.block("TESTBLK").unwrap();
+            let a = attdef(b, "NAME");
+            let ml = a.multiline.as_ref().expect("now multiline");
+            assert_eq!(ml.mtext.contents, mtext_literal("John"));
+            assert_eq!(ml.read_as, "John");
+            assert!(insert_attrib(d, "NAME").multiline.is_some());
+        }
+
+        s.execute("battman", &json!({"name": "TESTBLK", "action": "edit", "tag": "name", "multiline": false})).expect("back to single-line");
+        {
+            let d = s.doc().unwrap();
+            let b = d.block("TESTBLK").unwrap();
+            let a = attdef(b, "NAME");
+            assert!(a.multiline.is_none());
+            assert_eq!(a.text.value, "John");
+            assert!(insert_attrib(d, "NAME").multiline.is_none());
+        }
+    }
+
+    #[test]
+    fn edit_default_value_of_a_multiline_definition_updates_its_mtext() {
+        let mut s = session();
+        s.execute("battman", &json!({"name": "TESTBLK", "action": "edit", "tag": "name", "multiline": true})).expect("to multiline");
+        s.execute("battman", &json!({"name": "TESTBLK", "action": "edit", "tag": "name", "default": "Jane"})).expect("edit default");
+        let d = s.doc().unwrap();
+        let b = d.block("TESTBLK").unwrap();
+        let a = attdef(b, "NAME");
+        assert_eq!(a.text.value, "Jane");
+        // Saved/drawn text follows the edited value even though `read_as` still says "John".
+        assert_eq!(a.multiline_text().unwrap().contents, mtext_literal("Jane"));
+    }
+
+    #[test]
+    fn multiline_edits_sync_geometry_preserve_values_and_support_undo() {
+        let mut s = session();
+        let reference = s.execute("insert", &json!({"name": "TESTBLK", "at": [10,20], "scale": 2, "attribs": {"NAME": "Custom\nvalue"}})).unwrap();
+        let handle = Handle::parse_hex(reference["handle"].as_str().unwrap()).unwrap();
+        s.execute("battman", &json!({"name": "TESTBLK", "action": "edit", "tag": "NAME", "multiline": true, "width": 4, "height": 2})).unwrap();
+        let reference_attribute = |s: &Session| match &s.doc().unwrap().entity(handle).unwrap().kind {
+            EntityKind::Insert(i) => i.attribs.first().unwrap().clone(),
+            _ => panic!("not an insert"),
+        };
+        let a = reference_attribute(&s);
+        assert_eq!(a.text.value, "Custom\nvalue");
+        let ml = a.multiline_text().unwrap();
+        assert_eq!(ml.insert, cadcraft_geom::Vec3::new(10.0, 20.0, 0.0));
+        assert_eq!(ml.width, 8.0);
+        assert_eq!(ml.height, 4.0);
+        assert_eq!(ml.contents, mtext_literal("Custom\nvalue"));
+        s.execute("battman", &json!({"name": "TESTBLK", "action": "edit", "tag": "NAME", "height": 3})).unwrap();
+        assert_eq!(reference_attribute(&s).multiline_text().unwrap().height, 6.0);
+        s.execute("battman", &json!({"name": "TESTBLK", "action": "edit", "tag": "NAME", "multiline": false})).unwrap();
+        assert!(reference_attribute(&s).multiline.is_none());
+        s.execute("undo", &json!({})).unwrap();
+        assert!(attdef(s.doc().unwrap().block("TESTBLK").unwrap(), "NAME").multiline.is_some());
+        assert!(reference_attribute(&s).multiline.is_some());
+        assert_eq!(reference_attribute(&s).text.value, "Custom\nvalue");
+    }
+
+    #[test]
+    fn hostile_battman_params_never_panic() {
+        let mut s = session();
+        // Missing/blank/odd-typed parameters: every call must return an error, not panic.
+        let calls = [
+            json!({"name": "TESTBLK", "action": "add"}),
+            json!({"name": "TESTBLK", "action": "add", "tag": "  "}),
+            json!({"name": "TESTBLK", "action": "add", "tag": "a b"}),
+            json!({"name": "TESTBLK", "action": "add", "tag": "X1", "height": "nope"}),
+            json!({"name": "TESTBLK", "action": "add", "tag": "X2", "height": -1.0}),
+            json!({"name": "TESTBLK", "action": "add", "tag": "X3", "width": -1.0}),
+            json!({"name": "TESTBLK", "action": "add", "tag": "X4", "layer": "NoSuchLayer"}),
+            json!({"name": "TESTBLK", "action": "add", "tag": "X5", "at": "garbage"}),
+            json!({"name": "TESTBLK", "action": "add", "tag": "X6", "multiline": "yes"}),
+            json!({"name": "TESTBLK", "action": "edit", "tag": "name", "width": "NaN"}),
+            json!({"name": "TESTBLK", "action": "edit", "tag": "name", "width": -5.0}),
+            json!({"name": "TESTBLK", "action": "edit", "tag": "nonexistent", "multiline": true}),
+            json!({"name": "NoSuchBlock", "action": "add", "tag": "X"}),
+            json!(null),
+            json!({}),
+            json!({"name": "TESTBLK", "action": "weird-action"}),
+        ];
+        for p in calls {
+            let before = s.doc().unwrap().blocks.clone();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("battman", &p)));
+            assert!(result.is_ok(), "panicked for {p}");
+            let err = result.unwrap().expect_err("hostile parameters must fail");
+            assert!(!matches!(err, EngineError::Internal(..)), "guard caught a panic: {err}");
+            assert_eq!(s.doc().unwrap().blocks, before, "changed definitions for {p}");
+        }
+        // Malformed mode requests must not create an attribute.
+        let d = s.doc().unwrap();
+        let b = d.block("TESTBLK").unwrap();
+        assert!(defs(b).iter().all(|(_, a, _)| a.tag != "X6"));
     }
 }

@@ -1,13 +1,11 @@
 //! Region booleans (UNION, SUBTRACT, INTERSECT) and MASSPROP.
 //!
-//! The booleans handle regions whose boundaries don't cross or touch: each loop then lies wholly
-//! inside or outside the other region, and the result keeps the loops that bound it (union: the
-//! loops outside the other region; subtract: the first region's loops outside the second and the
-//! second's inside the first; intersect: the loops inside the other region). Overlapping
-//! boundaries need curve splitting and report "not available yet".
+//! Disjoint/nested boundaries keep their original curves. Boundaries sharing complete edges
+//! or vertices are merged into outlines; proper crossings and partial edge overlaps still
+//! require curve splitting and report "not available yet".
 
 use cadcraft_doc::{EntityKind, Handle, HatchLoop, MAX_REGION_LOOPS, Region};
-use cadcraft_geom::{Line, Vec2, line_line, point_in_polygon};
+use cadcraft_geom::{Line, PolyVertex, Vec2, line_line, point_in_polygon};
 use serde_json::{Value, json};
 
 use super::super::machines::{SelOutcome, SelectPhase, SelectRun};
@@ -15,6 +13,10 @@ use super::super::{CommandSpec, bad, targets};
 
 use super::SelfCheck;
 use crate::{EngineError, Input, Interactive, Prompt, Result, Session, Step};
+
+mod region_merge;
+#[cfg(test)]
+mod tests;
 
 /// The region commands: UNION, SUBTRACT and INTERSECT combine regions, MASSPROP measures them.
 pub fn specs() -> Vec<CommandSpec> {
@@ -106,26 +108,48 @@ enum Op {
     Intersect,
 }
 
-/// `a` op `b` for regions whose boundaries don't meet; `None` when they do (overlapping
-/// regions are not available yet).
+/// `a` op `b` for regions whose boundaries don't cross into each other's interior; `None` when
+/// they do (overlapping regions are not available yet).
+///
+/// Boundaries that merely touch (a shared vertex or a whole shared edge) are merged at the edge
+/// level by [`region_merge`]: each unique edge is kept, oriented with the result's interior on
+/// its left, when the op's result differs on its two sides (e.g. the wall shared by two abutting
+/// squares disappears from a UNION but stays in a SUBTRACT). Boundaries that don't meet at all
+/// take the faster whole-loop path, which also keeps arcs and bulges intact.
 fn combine(a: &Region, b: &Region, op: Op) -> Result<Option<Region>> {
     let size = a.bounds().union(&b.bounds());
     let tol = ((size.width() + size.height()) * 1e-6).max(1e-12);
     let (ta, tb) = (tess(a, tol), tess(b, tol));
-    if boundaries_meet(&ta, &tb, tol * 10.0)? {
+    let meet_tol = tol * 10.0;
+    if !boundaries_meet(&ta, &tb, meet_tol)? {
+        let keep = |loops: &[HatchLoop], pts: &[Vec<Vec2>], other: &[Vec<Vec2>], want_inside: bool| -> Vec<HatchLoop> {
+            loops.iter().zip(pts).filter(|(_, p)| probe(p).is_some_and(|q| inside(other, q) == want_inside)).map(|(l, _)| l.clone()).collect()
+        };
+        let mut loops = match op {
+            Op::Union => [keep(&a.loops, &ta, &tb, false), keep(&b.loops, &tb, &ta, false)].concat(),
+            Op::Subtract => [keep(&a.loops, &ta, &tb, false), keep(&b.loops, &tb, &ta, true)].concat(),
+            Op::Intersect => [keep(&a.loops, &ta, &tb, true), keep(&b.loops, &tb, &ta, true)].concat(),
+        };
+        if loops.len() > MAX_REGION_LOOPS {
+            return Err(other("Too many loops."));
+        }
+        loops.retain(|l| l.vertices.len() >= 2);
+        let mut r = Region { loops };
+        r.renest();
+        return Ok(Some(r));
+    }
+    if region_merge::has_unsupported_crossing(&ta, &tb, meet_tol) {
         return Ok(None);
     }
-    let keep = |loops: &[HatchLoop], pts: &[Vec<Vec2>], other: &[Vec<Vec2>], want_inside: bool| -> Vec<HatchLoop> {
-        loops.iter().zip(pts).filter(|(_, p)| probe(p).is_some_and(|q| inside(other, q) == want_inside)).map(|(l, _)| l.clone()).collect()
-    };
-    let mut loops = match op {
-        Op::Union => [keep(&a.loops, &ta, &tb, false), keep(&b.loops, &tb, &ta, false)].concat(),
-        Op::Subtract => [keep(&a.loops, &ta, &tb, false), keep(&b.loops, &tb, &ta, true)].concat(),
-        Op::Intersect => [keep(&a.loops, &ta, &tb, true), keep(&b.loops, &tb, &ta, true)].concat(),
-    };
-    if loops.len() > MAX_REGION_LOOPS {
+    let Some(merged) = region_merge::merge(&ta, &tb, op, meet_tol) else { return Ok(None) };
+    if merged.len() > MAX_REGION_LOOPS {
         return Err(other("Too many loops."));
     }
+    let mut loops: Vec<HatchLoop> = merged
+        .into_iter()
+        .filter(|l| l.len() >= 3)
+        .map(|pts| HatchLoop { vertices: pts.into_iter().map(PolyVertex::new).collect(), outer: true, sources: Vec::new() })
+        .collect();
     loops.retain(|l| l.vertices.len() >= 2);
     let mut r = Region { loops };
     r.renest();
