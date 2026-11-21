@@ -111,3 +111,28 @@ fn attribute_tags_match_in_any_case_and_unknown_tags_are_reported() {
     let r = s.execute("attedit", &json!({"handle": h.hex(), "values": {"T": "four"}})).unwrap();
     assert_eq!(r, json!({"changed": 1}));
 }
+
+#[test]
+fn dash_attedit_colorbook_resolves_a_named_book_color() {
+    let mut s = with_block();
+    let h = handle(&insert(&mut s, 100.0, json!({})));
+    type_lines(&mut s, &["-attedit", "y", "", "T", "", "105,0", ""]);
+    assert!(s.prompt_text().contains("[Value/Position/Height/Angle/Style/Layer/Color/Next] <N>"), "{}", s.prompt_text());
+    // c (Color) -> co (Colorbook keyword) -> CADCRAFT (book) -> OceanBlue (color) -> n (done, only 1 item).
+    type_lines(&mut s, &["c", "co", "CADCRAFT", "OceanBlue", "n"]);
+    assert!(s.running.is_none(), "{}", s.prompt_text());
+    let EntityKind::Insert(ins) = &s.doc().unwrap().entity(h).unwrap().kind else { panic!("not an insert") };
+    let a = ins.attribs.iter().find(|a| a.tag == "T").unwrap();
+    assert_eq!(a.props.color, Some(cadcraft_doc::color::Color::True(cadcraft_doc::color::Rgb(0, 105, 148))));
+
+    // An unknown book, then an unknown color in a real book, both re-prompt without crashing.
+    let mut s = with_block();
+    let h = handle(&insert(&mut s, 100.0, json!({})));
+    type_lines(&mut s, &["-attedit", "y", "", "T", "", "105,0", "", "c", "co", "NoSuchBook", "CADCRAFT", "NoSuchColor", "OceanBlue", "n"]);
+    assert!(s.running.is_none(), "{}", s.prompt_text());
+    let EntityKind::Insert(ins) = &s.doc().unwrap().entity(h).unwrap().kind else { panic!("not an insert") };
+    let a = ins.attribs.iter().find(|a| a.tag == "T").unwrap();
+    assert_eq!(a.props.color, Some(cadcraft_doc::color::Color::True(cadcraft_doc::color::Rgb(0, 105, 148))));
+    assert!(s.log.iter().any(|l| l.contains("No such color book")), "{:?}", s.log);
+    assert!(s.log.iter().any(|l| l.contains("No such color in that book")), "{:?}", s.log);
+}

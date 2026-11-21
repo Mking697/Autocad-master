@@ -103,6 +103,8 @@ enum Stage {
     RenameTo(String),
     Color,
     TrueColor,
+    ColorBook,
+    ColorBookColor(String),
     Ltype,
     Lweight,
     Transparency,
@@ -317,10 +319,7 @@ impl LayerM {
             }
             Stage::Color => match (&i, text) {
                 (Input::Keyword(k), _) if k == "Truecolor" => back(self, Stage::TrueColor),
-                (Input::Keyword(_), _) => {
-                    s.echo("Color books are not available yet.");
-                    Ok(Step::Continue)
-                }
+                (Input::Keyword(_), _) => back(self, Stage::ColorBook),
                 (_, None) => Ok(Step::Continue),
                 (_, Some(t)) => match Color::parse(&t) {
                     Some(Color::Index(c)) => back(self, Stage::Layers(Change::Color(c.to_string()))),
@@ -339,6 +338,26 @@ impl LayerM {
                     Err(retry("Enter three values from 0 to 255, separated by commas."))
                 }
             },
+            Stage::ColorBook => {
+                let Some(t) = text else { return Ok(Step::Continue) };
+                match cadcraft_color::color_book(&t) {
+                    Some(b) => back(self, Stage::ColorBookColor(b.name.to_string())),
+                    None => {
+                        self.stage = Stage::ColorBook;
+                        Err(retry(format!("No such color book. Known books: {}.", cadcraft_color::color_book_names().join(", "))))
+                    }
+                }
+            }
+            Stage::ColorBookColor(book) => {
+                let Some(t) = text else { return Ok(Step::Continue) };
+                match cadcraft_color::book_color(&book, &t) {
+                    Some(rgb) => back(self, Stage::Layers(Change::Color(format!("{},{},{}", rgb.0, rgb.1, rgb.2)))),
+                    None => {
+                        self.stage = Stage::ColorBookColor(book);
+                        Err(retry("No such color in that book."))
+                    }
+                }
+            }
             Stage::Ltype => match (&i, text) {
                 (Input::Keyword(_), _) => {
                     let names: Vec<String> = s.doc()?.linetypes.iter().map(|l| l.name.clone()).collect();
@@ -423,6 +442,8 @@ impl Interactive for LayerM {
             Stage::RenameTo(_) => Prompt::new("Enter new layer name", NAME),
             Stage::Color => Prompt::new("Enter color name or number (1-255)", NAME).kw(&["Truecolor", "COlorbook"]),
             Stage::TrueColor => Prompt::new("Red, Green, Blue", NAME),
+            Stage::ColorBook => Prompt::new(format!("Enter color book name ({})", cadcraft_color::color_book_names().join(", ")), NAME),
+            Stage::ColorBookColor(book) => Prompt::new(format!("Enter color name from the \"{book}\" color book"), NAME),
             Stage::Ltype => Prompt::new("Enter a loaded linetype name", NAME).kw(&["?"]).default("Continuous"),
             Stage::Lweight => Prompt::new("Enter lineweight (0.0mm - 2.11mm)", NAME),
             Stage::Transparency => Prompt::new("Enter transparency value (0-90)", NAME).default("0"),

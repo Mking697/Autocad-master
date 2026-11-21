@@ -71,3 +71,21 @@ fn layer_commands_reject_unloaded_linetypes_and_duplicate_renames() {
     s.execute("layer.set", &json!({ "name": "A", "newName": "a", "linetype": "continuous" })).unwrap();
     assert_eq!(s.doc().unwrap().layer("a").unwrap().linetype, "Continuous");
 }
+
+#[test]
+fn colorbook_keyword_resolves_a_named_book_color() {
+    let mut s = Session::new();
+    // C (Color) -> CO (Colorbook keyword) -> CADCRAFT (book) -> OceanBlue (color) -> B (layer).
+    s.script("-LAYER N B\nC\nCO\nCADCRAFT\nOceanBlue\nB\n\n").unwrap();
+    assert!(s.running.is_none(), "{}", s.prompt_text());
+    let b = s.doc().unwrap().layer("B").unwrap().clone();
+    assert_eq!(b.color, cadcraft_color::Color::True(cadcraft_color::Rgb(0, 105, 148)));
+
+    // An unknown book, then an unknown color in a real book, both re-prompt without crashing.
+    let mut s = Session::new();
+    s.script("-LAYER N C\nC\nCO\nNoSuchBook\nCADCRAFT\nNoSuchColor\nOceanBlue\nC\n\n").unwrap();
+    assert!(s.running.is_none(), "{}", s.prompt_text());
+    assert_eq!(s.doc().unwrap().layer("C").unwrap().color, cadcraft_color::Color::True(cadcraft_color::Rgb(0, 105, 148)));
+    assert!(s.log.iter().any(|l| l.contains("No such color book")), "{:?}", s.log);
+    assert!(s.log.iter().any(|l| l.contains("No such color in that book")), "{:?}", s.log);
+}

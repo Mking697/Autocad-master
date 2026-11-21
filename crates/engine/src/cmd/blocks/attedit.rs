@@ -303,6 +303,8 @@ enum Stage {
     Layer,
     Color,
     TrueColor,
+    ColorBook,
+    ColorBookColor(u8),
     /// Specify new text insertion point.
     Position,
     /// Specify new height.
@@ -407,6 +409,11 @@ impl Interactive for DashAtteditM {
                 }
             }
             Stage::TrueColor => Prompt::new("Red, Green, Blue", NAME),
+            Stage::ColorBook => Prompt::new(format!("Enter color book name ({})", cadcraft_color::color_book_names().join(", ")), NAME),
+            Stage::ColorBookColor(idx) => {
+                let book = cadcraft_color::COLOR_BOOKS.get(idx as usize).map_or("?", |b| b.name);
+                Prompt::new(format!("Enter color name from the \"{book}\" color book"), NAME)
+            }
             Stage::Position => {
                 let p = Prompt::new("Specify new text insertion point", Accept::POINT);
                 match cur_text() {
@@ -594,7 +601,8 @@ impl Interactive for DashAtteditM {
                         self.stage = Stage::TrueColor;
                         return Ok(Step::Continue);
                     }
-                    return Err(EngineError::Other("Color books are not available yet.".into()));
+                    self.stage = Stage::ColorBook;
+                    return Ok(Step::Continue);
                 }
                 let Some(t) = text else { return Ok(Step::Continue) };
                 if !t.trim().is_empty() {
@@ -605,6 +613,46 @@ impl Interactive for DashAtteditM {
                     };
                     if let Some(it) = self.items.get(self.cur).copied() {
                         set_props(s, it, |p| p.color = Some(c))?;
+                    }
+                }
+                self.stage = Stage::Option;
+            }
+            Stage::ColorBook => {
+                let Some(t) = text else { return Ok(Step::Continue) };
+                if !t.trim().is_empty() {
+                    match cadcraft_color::COLOR_BOOKS.iter().position(|b| b.name.eq_ignore_ascii_case(t.trim())) {
+                        Some(idx) => {
+                            self.stage = Stage::ColorBookColor(idx as u8);
+                            return Ok(Step::Continue);
+                        }
+                        None => {
+                            self.stage = Stage::ColorBook;
+                            return Err(EngineError::Other(format!(
+                                "No such color book. Known books: {}.",
+                                cadcraft_color::color_book_names().join(", ")
+                            )));
+                        }
+                    }
+                }
+                self.stage = Stage::Option;
+            }
+            Stage::ColorBookColor(idx) => {
+                let Some(t) = text else { return Ok(Step::Continue) };
+                if !t.trim().is_empty() {
+                    let rgb = cadcraft_color::COLOR_BOOKS
+                        .get(idx as usize)
+                        .and_then(|b| b.colors.iter().find(|c| c.name.eq_ignore_ascii_case(t.trim())))
+                        .map(|c| c.rgb);
+                    match rgb {
+                        Some(rgb) => {
+                            if let Some(it) = self.items.get(self.cur).copied() {
+                                set_props(s, it, |p| p.color = Some(Color::True(rgb)))?;
+                            }
+                        }
+                        None => {
+                            self.stage = Stage::ColorBookColor(idx);
+                            return Err(EngineError::Other("No such color in that book.".into()));
+                        }
                     }
                 }
                 self.stage = Stage::Option;

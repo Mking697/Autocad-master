@@ -230,6 +230,69 @@ pub fn display_rgb(c: Rgb, aci7: bool, background: Rgb) -> Rgb {
     }
 }
 
+/// A named colour inside a [`ColorBook`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BookColor {
+    pub name: &'static str,
+    pub rgb: Rgb,
+}
+
+/// A named colour book, like the ones DXF group 430 (`book$colour`) and AutoCAD's "Colorbook"
+/// keyword refer to. Real third-party books (Pantone, RAL…) are proprietary and are never shipped
+/// here (see AGENTS.md's clean-room rule); CADCraft ships its own originally-named swatch library
+/// so the "Colorbook" option on -LAYER/-ATTEDIT's Color prompt has something real to resolve
+/// against instead of reporting "not available yet".
+#[derive(Clone, Copy, Debug)]
+pub struct ColorBook {
+    pub name: &'static str,
+    pub colors: &'static [BookColor],
+}
+
+const fn bc(name: &'static str, r: u8, g: u8, b: u8) -> BookColor {
+    BookColor { name, rgb: Rgb(r, g, b) }
+}
+
+// Single-word names: the -LAYER/-ATTEDIT command line (like an AutoCAD script) ends an input at
+// a space, so a typeable colour-book name can't contain one.
+static CADCRAFT_COLORS: &[BookColor] = &[
+    bc("OceanBlue", 0, 105, 148),
+    bc("ForestGreen", 34, 102, 51),
+    bc("SunsetOrange", 230, 103, 23),
+    bc("Charcoal", 54, 54, 56),
+    bc("SlateGray", 112, 128, 136),
+    bc("BrickRed", 150, 40, 27),
+    bc("Goldenrod", 207, 164, 32),
+    bc("PlumPurple", 103, 51, 107),
+    bc("SteelTeal", 34, 123, 128),
+    bc("SandBeige", 210, 180, 140),
+    bc("MidnightNavy", 20, 30, 70),
+    bc("MossGreen", 96, 121, 60),
+    bc("Terracotta", 180, 92, 64),
+    bc("IvoryWhite", 240, 238, 225),
+    bc("Graphite", 70, 70, 75),
+    bc("Copper", 184, 115, 51),
+];
+
+/// Every built-in colour book. CADCraft ships one originally-named library; nothing here is
+/// copied from Pantone, RAL or any other proprietary book.
+pub static COLOR_BOOKS: &[ColorBook] = &[ColorBook { name: "CADCRAFT", colors: CADCRAFT_COLORS }];
+
+/// Finds a built-in colour book by name, case-insensitively.
+pub fn color_book(name: &str) -> Option<&'static ColorBook> {
+    COLOR_BOOKS.iter().find(|b| b.name.eq_ignore_ascii_case(name.trim()))
+}
+
+/// Resolves a colour inside a built-in book by name, case-insensitively. `None` when the book or
+/// the colour name doesn't exist.
+pub fn book_color(book: &str, color: &str) -> Option<Rgb> {
+    color_book(book)?.colors.iter().find(|c| c.name.eq_ignore_ascii_case(color.trim())).map(|c| c.rgb)
+}
+
+/// The names of every built-in colour book.
+pub fn color_book_names() -> Vec<&'static str> {
+    COLOR_BOOKS.iter().map(|b| b.name).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,5 +370,28 @@ mod tests {
         // Only colour 7 flips: ACI 255 / true-colour white and dark index colours keep their RGB.
         assert_eq!(display_rgb(Rgb(255, 255, 255), false, Rgb(255, 255, 255)), Rgb(255, 255, 255));
         assert_eq!(display_rgb(aci_rgb(250), false, Rgb(33, 40, 48)), aci_rgb(250));
+    }
+
+    #[test]
+    fn color_book_lookup_is_case_insensitive_and_bounded() {
+        assert!(color_book("cadcraft").is_some());
+        assert!(color_book(" CadCraft ").is_some());
+        assert_eq!(book_color("CADCRAFT", "oceanblue"), Some(Rgb(0, 105, 148)));
+        assert_eq!(book_color("CADCRAFT", " OceanBlue "), Some(Rgb(0, 105, 148)));
+        assert_eq!(book_color("cadcraft", "No Such Color"), None);
+        assert_eq!(book_color("No Such Book", "OceanBlue"), None);
+        assert_eq!(book_color("", ""), None);
+        assert_eq!(color_book_names(), vec!["CADCRAFT"]);
+    }
+
+    #[test]
+    fn every_book_color_name_is_unique_and_has_no_spaces() {
+        for book in COLOR_BOOKS {
+            let mut seen = std::collections::HashSet::new();
+            for c in book.colors {
+                assert!(!c.name.contains(' '), "{} in {} has a space; it would split at a NAME prompt", c.name, book.name);
+                assert!(seen.insert(c.name.to_ascii_lowercase()), "duplicate name {} in {}", c.name, book.name);
+            }
+        }
     }
 }
