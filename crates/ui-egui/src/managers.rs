@@ -3,7 +3,8 @@
 //!
 //! Typed or chosen from a menu (no parameters) these commands open their dialog; JSON calls run
 //! the command. The dialogs read the drawing and change it only through the same commands
-//! (`app.run`), so every change is undoable and scriptable.
+//! (`app.run`), so drawing changes are undoable and scriptable. MATCHPROP Settings remembers
+//! session preferences through a command too, without adding drawing undo steps.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -16,6 +17,7 @@ use crate::theme::Tokens;
 
 /// The Block Attribute Manager (BATTMAN).
 mod battman;
+mod matchprop;
 
 /// Open the dialog for a typed or menu-invoked command. `None` if `id` has no dialog here or the
 /// call carries parameters.
@@ -53,6 +55,7 @@ pub fn dialog(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool
         "mleaderstyle" => mleader_style(app, ctx, open),
         "pagesetup" => page_setup(app, ctx, open),
         "csettings" => constraint_settings(app, ctx, open),
+        "matchprop" => matchprop::dialog(app, ctx, open),
         "plot" => plot(app, ctx, open),
         _ => {
             *open = false;

@@ -248,6 +248,42 @@ fn match_onto(s: &mut Session, src: Handle, targets: &[Handle], m: &MatchProps) 
     Ok(n)
 }
 
+/// All 15 settings as `{name: bool}` (the JSON names in [`FIELDS`]).
+fn settings_json(m: &MatchProps) -> Value {
+    let mut mc = *m;
+    let map: serde_json::Map<String, Value> = FIELDS.iter().map(|(_, n, f)| ((*n).to_string(), json!(*f(&mut mc)))).collect();
+    Value::Object(map)
+}
+
+/// MATCHPROP Settings, read or changed without a running MATCHPROP (`Session.last_used.matchprop`,
+/// the same state the typed command's Settings keyword reads and writes): with no `properties`,
+/// reports the current settings; with `properties: {name: bool}`, updates only the named ones
+/// (unlike the `matchprop` command's own `properties`, which replaces every setting at once). This
+/// is what the Match Properties Settings dialog calls.
+pub(super) fn run_matchprop_settings(s: &mut Session, p: &Value) -> Result<Value> {
+    if !p.is_null() && !p.is_object() {
+        return Err(bad("matchprop.settings", "parameters must be an object"));
+    }
+    if let Some(v) = p.get("properties") {
+        let obj = v.as_object().ok_or_else(|| bad("matchprop.settings", format!("`properties` must be {{name: bool}}, got {v}")))?;
+        if obj.len() > FIELDS.len() {
+            return Err(bad("matchprop.settings", "too many properties"));
+        }
+        let mut m = s.last_used.matchprop;
+        for (n, x) in obj {
+            let on = x.as_bool().ok_or_else(|| bad("matchprop.settings", format!("`properties.{n}` must be true or false")))?;
+            if !m.set(n, on) {
+                return Err(bad(
+                    "matchprop.settings",
+                    format!("unknown property `{n}` (known: {})", FIELDS.iter().map(|f| f.1).collect::<Vec<_>>().join(", ")),
+                ));
+            }
+        }
+        s.last_used.matchprop = m;
+    }
+    Ok(json!({ "properties": settings_json(&s.last_used.matchprop) }))
+}
+
 pub(super) fn run_matchprop(s: &mut Session, p: &Value) -> Result<Value> {
     let src = match p.get("source") {
         None | Some(Value::Null) => return Err(bad("matchprop", "`source` (object handle) is required")),

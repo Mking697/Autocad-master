@@ -50,7 +50,14 @@ fn home_panels() -> Vec<(&'static str, Vec<Tool>)> {
         ("Annotation", annotation_tools()),
         ("Layers", vec![(Icon::LayerProps, "ui.dialog.layers", "Layer Properties"), (Icon::LayerOff, "layoff", "Off")]),
         ("Block", DRAFTING.iter().find(|(n, _, _)| *n == "Block").map(|(_, l, s)| l.iter().chain(s.iter()).copied().collect()).unwrap_or_default()),
-        ("Properties", vec![(Icon::Properties, "ui.toggle.palettes", "Properties"), (Icon::MatchProp, "matchprop", "Match Properties")]),
+        (
+            "Properties",
+            vec![
+                (Icon::Properties, "ui.toggle.palettes", "Properties"),
+                (Icon::MatchProp, "matchprop", "Match Properties"),
+                (Icon::MatchProp, "ui.dialog.matchprop", "Match Properties Settings"),
+            ],
+        ),
         ("Utilities", vec![(Icon::Measure, "dist", "Measure"), (Icon::List, "list", "List"), (Icon::Area, "area", "Area")]),
     ]
 }

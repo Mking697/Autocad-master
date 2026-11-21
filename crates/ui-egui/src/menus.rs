@@ -67,6 +67,7 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.dialog.layers", "Layer Properties Manager", &["Window", "Layers"], None),
     ("ui.dialog.blocks", "Blocks", &["Window", "Blocks"], None),
     ("ui.dialog.qselect", "Quick Select...", &[], None),
+    ("ui.dialog.matchprop", "Match Properties Settings...", &["Modify", "Match Properties Settings..."], None),
     ("ui.dialog.parameters", "Parameters Manager", &["Window", "Parameters Manager"], None),
     ("ui.dialog.dsettings", "Drafting Settings...", &[], None),
     #[cfg(not(target_arch = "wasm32"))]
@@ -392,7 +393,8 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
         | "ui.dialog.about"
         | "ui.dialog.commands"
         | "ui.dialog.qselect"
-        | "ui.dialog.parameters" => {
+        | "ui.dialog.parameters"
+        | "ui.dialog.matchprop" => {
             app.ui.dialog = Some(id.trim_start_matches("ui.dialog.").to_string());
             Ok(Value::Null)
         }

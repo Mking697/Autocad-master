@@ -75,6 +75,7 @@ pub const DRAFTING: &[(&str, &[Tool], &[Tool])] = &[
             (Icon::Erase, "erase", "Erase"),
             (Icon::Lengthen, "lengthen", "Lengthen"),
             (Icon::MatchProp, "matchprop", "Match Properties"),
+            (Icon::MatchProp, "ui.dialog.matchprop", "Match Properties Settings"),
         ],
     ),
     (
