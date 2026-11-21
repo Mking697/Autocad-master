@@ -1,6 +1,6 @@
 # Where CADCraft falls short of AutoCAD
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-21 · **Change:** minor (FF4 narrowed: Johab/DOS code pages already round-trip on save, proved by a test, stale row corrected; previously: F1 narrowed: colour books on -LAYER/-ATTEDIT Color now resolve real colours through an originally-named swatch library; previously: U12 narrowed: named UI Workspaces; previously real block/text/table contextual Ribbon tabs; previously customizable Quick Access Toolbar and local document/command Info Bar; S3 corrected: 1 open PR (gh api paginated count, 2026-11-20); U12 narrowed: Manage, Output and Express Tools ribbon tabs now have real panels; previously: F7 narrowed: DIMALTTD/DIMALTTZ format the alternate units' own tolerance, landed; previously: F16 removed: GROUPDISPLAYMODE system variable (bounding box and/or single centroid grip replacing per-member grips on a whole, selectable group selection, matching AutoCAD's 0/1/2) and the Object Grouping dialog (list, New/Rename/Describe, toggle Selectable, Add/Remove Selected, Delete, driving the existing GROUP/GROUPEDIT/UNGROUP commands) landed, closing the row; previously: F13 narrowed: the Hatch and Gradient dialog's Preview button landed, hiding the dialog and really committing the hatch — any key or click undoes it and brings the dialog back, like AutoCAD; previously: U12 narrowed further: the Ribbon's Insert, Annotate, Parametric and View tabs now have real panels, not just Home; see revision history) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-21 · **Change:** minor (S4/P1 narrowed: browser plot's "raw PDF bytes" issue, #134, checked and found already fixed; previously: FF4 narrowed: Johab/DOS code pages already round-trip on save, proved by a test, stale row corrected; previously: F1 narrowed: colour books on -LAYER/-ATTEDIT Color now resolve real colours through an originally-named swatch library; previously: U12 narrowed: named UI Workspaces; previously real block/text/table contextual Ribbon tabs; previously customizable Quick Access Toolbar and local document/command Info Bar; S3 corrected: 1 open PR (gh api paginated count, 2026-11-20); U12 narrowed: Manage, Output and Express Tools ribbon tabs now have real panels; previously: F7 narrowed: DIMALTTD/DIMALTTZ format the alternate units' own tolerance, landed; previously: F16 removed: GROUPDISPLAYMODE system variable (bounding box and/or single centroid grip replacing per-member grips on a whole, selectable group selection, matching AutoCAD's 0/1/2) and the Object Grouping dialog (list, New/Rename/Describe, toggle Selectable, Add/Remove Selected, Delete, driving the existing GROUP/GROUPEDIT/UNGROUP commands) landed, closing the row; previously: F13 narrowed: the Hatch and Gradient dialog's Preview button landed, hiding the dialog and really committing the hatch — any key or click undoes it and brings the dialog back, like AutoCAD; previously: U12 narrowed further: the Ribbon's Insert, Annotate, Parametric and View tabs now have real panels, not just Home; see revision history) · **Target:** Autodesk AutoCAD 2027
 
 Every known shortfall, one row each, ranked within each section by user impact. This is the work
 list: agents pick from here (top of a section first), and remove or update a row in the same PR
@@ -33,8 +33,8 @@ a phase is fine.
       SAVEAS format prompt
 - [x] FF4: Johab/DOS code pages on save — already worked (stale row; proved with a test, `e515d885`)
 - [ ] U10: keep narrowing SETVAR (≈167 of ~1,000; pick the next batch of header-backed variables)
-- [ ] S4: remaining open correctness item (#134, browser plot shows raw PDF bytes) — may belong to
-      P1 instead, check both before starting
+- [x] S4: remaining open correctness item (#134, browser plot shows raw PDF bytes) — checked
+      2026-11-21, already fixed (see S4 row); P1 updated too
 - [ ] U13: `.dxf` from Finder fails to open on macOS (#158)
 
 ### Phase 2 — alpha-gate rows, medium (≈4–25h each)
@@ -183,14 +183,14 @@ Detail: [localization-parity.md](localization-parity.md).
 |---|---|---|---|
 | S2 | ~~`cargo fmt --check` fails on main~~ fixed on main (8fceaaf) | — | 0 |
 | S3 | 1 open PR, awaiting review | `gh pr list` | 2–4 |
-| S4 | Open correctness issues: browser plot shows raw PDF bytes (#134) (closing a tab and browser saves fixed, #76, #133; extents union of far-apart geometry (#166) and lines not visible mid-command (#44) checked and closed, see revision history) | issues | 2–4 |
+| S4 | Open correctness issues (closing a tab and browser saves fixed, #76, #133; extents union of far-apart geometry (#166) and lines not visible mid-command (#44) checked and closed, see revision history). ~~browser plot shows raw PDF bytes (#134)~~ — checked 2026-11-21, already fixed: `deliver_file` sets the right MIME (`application/pdf`/`image/png`/`image/svg+xml`) and goes through the browser's `<a download>` anchor, which forces a real save instead of inline navigation (proven by `web_export_delivers_a_download_instead_of_writing_a_path`); Plot Preview never touches PDF bytes at all — it renders a PNG into an egui texture shown inside the app's own dialog. No remaining known open issue in this row | issues | 0 |
 | S5 | No smoke test of every command through the UI (PR #42 proposes one) | — | 6–10 |
 
 ## Platforms
 
 | # | Gap | Est. |
 |---|---|---|
-| P1 | Web build: plot shows raw PDF bytes (#134), no DWG (File > Open and save downloads fixed, #55, #133) | 3–5 |
+| P1 | Web build: no DWG (File > Open and save downloads fixed, #55, #133; "plot shows raw PDF bytes", #134, checked 2026-11-21 and already fixed — see S4) | 1–2 |
 | P2 | Windows and Linux get little runtime testing; Linux Mint mouse delay (#25); Windows magnifier (#39) | 6–10 |
 | P3 | macOS file associations: opening `.dxf` from Finder fails (#158) | 1–2 |
 
@@ -215,6 +215,7 @@ Detail: [localization-parity.md](localization-parity.md).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-21 | minor | S4/P1 narrowed: checked the "browser plot shows raw PDF bytes" issue (#134) against current source and found it already fixed by prior work, not caught by the stale row — `cmd::exchange::deliver_file` sets the correct MIME type per extension and goes through the host's download hook (the web build's `<a download>` anchor, which forces a save instead of inline navigation), proven by the existing `web_export_delivers_a_download_instead_of_writing_a_path` test; Plot Preview separately never touches PDF bytes — it renders a PNG into an egui texture inside the app's own dialog |
 | 2026-11-21 | minor | Phased execution plan added (5 phases covering the whole backlog, used to pick work order going forward); FF4 narrowed: Johab/DOS code pages already round-trip correctly on save (the row was stale from before the 694d6057 round's real decoders) — `johab_and_dos_code_pages_are_also_kept_before_2007` proves it for all 13 pages; only acadrust's DWG-side approximation remains, a third-party dependency limitation |
 | 2026-11-21 | minor | F1 narrowed: colour books on -LAYER and -ATTEDIT's Color prompt (the "Colorbook" keyword, previously "not available yet") now resolve real colours through `cadcraft_color::COLOR_BOOKS` — an originally-named 16-colour swatch library (Pantone/RAL are proprietary and never shipped, clean-room rule), with book-name then colour-name sub-prompts on both commands. -RENAME of materials stays open: CADCraft has no material table at all (not a small stub; closer to F24's 3D/materials scope) |
 | 2026-11-20 | minor | U12 narrowed: named Window ▸ Workspaces... save/switch/delete up to 16 interface layouts (panel docking, toolbar/ribbon/palette/Tool Sets visibility, normal Ribbon tab, QAT choices); atomic validate-before-apply save and restore (`workspaces.rs`), drawings/active commands/pending command-line input/dialogs are never touched. New `ui.workspace.list/save/switch/delete` commands and regression tests in `named_workspaces.rs`. |
