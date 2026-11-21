@@ -147,13 +147,15 @@ fn booleans_on_separate_and_nested_regions() {
     assert!(r["handle"].is_null());
     assert_eq!(s.doc().unwrap().model.len(), 0);
 
-    // Overlapping boundaries: not available yet, nothing changes.
+    // Overlapping (properly crossing) boundaries now merge by splitting at the crossing points.
     let mut s = Session::new();
     let a = rect_region(&mut s, [0.0, 0.0], [10.0, 10.0]);
     let b = rect_region(&mut s, [5.0, 5.0], [15.0, 15.0]);
-    let err = s.execute("union", &json!({"handles": [a.hex(), b.hex()]})).unwrap_err().to_string();
-    assert!(err.contains("not available yet"), "{err}");
-    assert_eq!(s.doc().unwrap().model.len(), 2);
+    s.execute("union", &json!({"handles": [a.hex(), b.hex()]})).unwrap();
+    let r = region(&s, a);
+    assert_eq!(r.loops.len(), 1, "{r:?}");
+    assert!(near(r.area(), 175.0), "{}", r.area()); // 100 + 100 - 25 overlap
+    assert!(s.doc().unwrap().entity(b).is_none());
     assert!(s.execute("subtract", &json!({"from": [a.hex()], "remove": [a.hex()]})).is_err());
 }
 

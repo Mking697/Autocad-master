@@ -79,3 +79,59 @@ fn coincident_regions_are_not_duplicated() {
         }
     }
 }
+
+/// #F21 narrowed: UNION, SUBTRACT and INTERSECT of two squares whose boundaries properly cross
+/// each other's interior (classic overlapping-rectangles case), handled by splitting each
+/// boundary at the two crossing points before tracing the result's outline.
+#[test]
+fn booleans_on_properly_overlapping_squares() {
+    // A = (0,0)-(2,2), B = (1,1)-(3,3): A's right/top edges cross B's bottom/left edges at
+    // (2,1) and (1,2); the overlap is the unit square (1,1)-(2,2).
+    let mut s = Session::new();
+    let a = rect_region(&mut s, [0.0, 0.0], [2.0, 2.0]);
+    let b = rect_region(&mut s, [1.0, 1.0], [3.0, 3.0]);
+    s.execute("union", &json!({"handles": [a.hex(), b.hex()]})).unwrap();
+    let r = region(&s, a);
+    assert_eq!(r.loops.len(), 1, "{r:?}");
+    assert!(near(r.area(), 7.0), "{}", r.area()); // 4 + 4 - 1 overlap
+    assert!(r.contains(Vec2::new(0.5, 0.5)) && r.contains(Vec2::new(2.5, 2.5)) && r.contains(Vec2::new(1.5, 1.5)));
+    assert!(!r.contains(Vec2::new(2.5, 0.5)), "outside both squares");
+    assert!(s.doc().unwrap().entity(b).is_none());
+
+    let mut s = Session::new();
+    let a = rect_region(&mut s, [0.0, 0.0], [2.0, 2.0]);
+    let b = rect_region(&mut s, [1.0, 1.0], [3.0, 3.0]);
+    s.execute("intersect", &json!({"handles": [a.hex(), b.hex()]})).unwrap();
+    let r = region(&s, a);
+    assert_eq!(r.loops.len(), 1, "{r:?}");
+    assert!(near(r.area(), 1.0), "{}", r.area());
+    assert!(r.contains(Vec2::new(1.5, 1.5)));
+    assert!(!r.contains(Vec2::new(0.5, 0.5)));
+
+    let mut s = Session::new();
+    let a = rect_region(&mut s, [0.0, 0.0], [2.0, 2.0]);
+    let b = rect_region(&mut s, [1.0, 1.0], [3.0, 3.0]);
+    s.execute("subtract", &json!({"from": [a.hex()], "remove": [b.hex()]})).unwrap();
+    let r = region(&s, a);
+    assert_eq!(r.loops.len(), 1, "{r:?}");
+    assert!(near(r.area(), 3.0), "{}", r.area());
+    assert!(r.contains(Vec2::new(0.5, 0.5)));
+    assert!(!r.contains(Vec2::new(1.5, 1.5)), "the overlap with B is removed");
+}
+
+/// A collinear partial overlap (two edges run along the same line for part of their length
+/// without matching endpoint-for-endpoint) is still not available: the operands are left alone
+/// and the caller gets the clean error, never a panic or a silently wrong result.
+#[test]
+fn collinear_partial_overlap_is_still_refused() {
+    // A = (0,0)-(2,1); B = (1,0)-(3,1): their bottom and top edges run along the same two
+    // lines (y=0, y=1) but overlap only over x in [1,2], not endpoint-for-endpoint.
+    let mut s = Session::new();
+    let a = rect_region(&mut s, [0.0, 0.0], [2.0, 1.0]);
+    let b = rect_region(&mut s, [1.0, 0.0], [3.0, 1.0]);
+    let err = s.execute("union", &json!({"handles": [a.hex(), b.hex()]})).unwrap_err();
+    assert!(err.to_string().contains("not available yet"), "{err}");
+    // Nothing changed: both regions are still exactly as they were.
+    assert!(s.doc().unwrap().entity(a).is_some());
+    assert!(s.doc().unwrap().entity(b).is_some());
+}

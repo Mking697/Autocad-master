@@ -1,30 +1,38 @@
 //! Boundary merge for UNION/SUBTRACT/INTERSECT when two regions' boundaries touch (share
-//! vertices or whole edges) without crossing into each other's interior.
+//! vertices or whole edges) or properly cross each other.
 //!
-//! The regions are already tessellated to straight edges. Edges that coincide between the two
-//! regions (or merely share a vertex) are the only "meeting" this module handles: each unique
-//! edge is sampled just off both sides to see which side (if any) the operator's result covers,
-//! kept — oriented with the result on its left — when the two sides differ, and the kept edges
-//! are traced into closed loops the same way a planar graph's faces are traced (always the
-//! sharpest clockwise turn). A proper crossing (the boundaries cut through each other's
-//! interior) or a partial collinear overlap is not handled here; the caller checks for those
-//! first and reports "not available yet" instead of calling this module.
+//! The regions are already tessellated to straight edges. [`split_crossings`] turns every
+//! transversal crossing between an edge of one region and an edge of the other into a shared
+//! vertex (a Weiler-Atherton style boundary split), so the graph this module builds afterwards
+//! only ever has to deal with edges that meet exactly at an endpoint: each unique edge is
+//! sampled just off both sides to see which side (if any) the operator's result covers, kept —
+//! oriented with the result on its left — when the two sides differ, and the kept edges are
+//! traced into closed loops the same way a planar graph's faces are traced (always the
+//! sharpest clockwise turn). A partial collinear overlap (two boundaries running along the same
+//! line for part of their length without matching endpoint-for-endpoint) is not handled by
+//! either function; the caller checks for that first and reports "not available yet" instead of
+//! calling this module.
 
 use std::collections::{HashMap, HashSet};
 
-use cadcraft_geom::{Bounds2, Line, TAU, Vec2, line_line, norm_angle};
+use cadcraft_geom::{Bounds2, Line, TAU, Vec2, line_line_infinite, norm_angle};
 
 use super::{Op, inside};
+
+/// Most intersections computed while splitting one region's boundary against the other's
+/// (hostile input: very fine tessellation on both sides).
+const MAX_SPLITS: usize = 200_000;
 
 /// Most unique edges considered (hostile input: very fine tessellation).
 const MAX_EDGES: usize = 200_000;
 /// Most loops traced out of one merge (hostile input: pathological touching configurations).
 const MAX_TRACE_LOOPS: usize = 10_000;
 
-/// Whether `a` and `b`'s edges include a proper crossing (an intersection strictly inside both
-/// segments, more than `tol` from every endpoint) or a collinear overlap that doesn't match
-/// endpoint-for-endpoint. Either needs curve splitting this module doesn't do.
-pub fn has_unsupported_crossing(a: &[Vec<Vec2>], b: &[Vec<Vec2>], tol: f64) -> bool {
+/// Whether `a` and `b`'s edges include a collinear overlap that doesn't match endpoint-for-
+/// endpoint (two boundaries running along the same line for part of their length). This is the
+/// only case [`split_crossings`]/[`merge`] can't turn into a traceable graph; a proper crossing
+/// is handled by [`split_crossings`] instead of being rejected here.
+pub fn has_unsupported_overlap(a: &[Vec<Vec2>], b: &[Vec<Vec2>], tol: f64) -> bool {
     let edges = |ls: &[Vec<Vec2>]| -> Vec<Line> {
         ls.iter().flat_map(|l| (0..l.len()).filter_map(move |i| Some(Line::new(*l.get(i)?, *l.get((i + 1) % l.len())?)))).collect()
     };
@@ -37,20 +45,77 @@ pub fn has_unsupported_crossing(a: &[Vec<Vec2>], b: &[Vec<Vec2>], tol: f64) -> b
             if y.len() < tol {
                 continue;
             }
-            if let Some(p) = line_line(x, y)
-                && p.dist(x.a) > tol
-                && p.dist(x.b) > tol
-                && p.dist(y.a) > tol
-                && p.dist(y.b) > tol
-            {
-                return true;
-            }
             if collinear_partial_overlap(x, y, tol) {
                 return true;
             }
         }
     }
     false
+}
+
+/// Splits every edge of `a` and `b` at points where an edge of one properly crosses an edge of
+/// the other (an intersection strictly inside both segments, more than `tol` from every
+/// endpoint), so every crossing becomes a shared vertex the graph trace in [`merge`] can route
+/// through, like a Weiler-Atherton boundary split. Collinear partial overlaps are left alone
+/// (still unsupported, see [`has_unsupported_overlap`]); a loop with no crossings against the
+/// other side comes back unchanged. Returns `None` on hostile input (too many intersections to
+/// bound the work).
+pub fn split_crossings(a: &[Vec<Vec2>], b: &[Vec<Vec2>], tol: f64) -> Option<(Vec<Vec<Vec2>>, Vec<Vec<Vec2>>)> {
+    let edges = |ls: &[Vec<Vec2>]| -> Vec<Line> {
+        ls.iter().flat_map(|l| (0..l.len()).filter_map(move |i| Some(Line::new(*l.get(i)?, *l.get((i + 1) % l.len())?)))).collect()
+    };
+    let other_edges_a = edges(b);
+    let other_edges_b = edges(a);
+    let mut total = 0usize;
+    let split_one = |loops: &[Vec<Vec2>], other: &[Line], total: &mut usize| -> Option<Vec<Vec<Vec2>>> {
+        loops
+            .iter()
+            .map(|l| {
+                let n = l.len();
+                let mut out = Vec::with_capacity(n);
+                for i in 0..n {
+                    let (p0, p1) = (*l.get(i)?, *l.get((i + 1) % n)?);
+                    out.push(p0);
+                    let len = p0.dist(p1);
+                    if len < tol {
+                        continue;
+                    }
+                    let mut ts: Vec<f64> = Vec::new();
+                    for y in other {
+                        if y.len() < tol {
+                            continue;
+                        }
+                        let Some((pt, t, u)) = line_line_infinite(p0, p1, y.a, y.b) else { continue };
+                        let eps = (tol / len).min(0.49);
+                        if !(eps..=1.0 - eps).contains(&t) || !(0.0..=1.0).contains(&u) {
+                            continue;
+                        }
+                        if pt.dist(p0) <= tol || pt.dist(p1) <= tol || pt.dist(y.a) <= tol || pt.dist(y.b) <= tol {
+                            continue; // already a shared endpoint; nothing to split
+                        }
+                        *total += 1;
+                        if *total > MAX_SPLITS {
+                            return None;
+                        }
+                        ts.push(t);
+                    }
+                    ts.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+                    let mut last = 0.0;
+                    for t in ts {
+                        if (t - last) * len < tol {
+                            continue; // two crossings too close together to tell apart
+                        }
+                        out.push(p0 + (p1 - p0) * t);
+                        last = t;
+                    }
+                }
+                Some(out)
+            })
+            .collect()
+    };
+    let sa = split_one(a, &other_edges_a, &mut total)?;
+    let sb = split_one(b, &other_edges_b, &mut total)?;
+    Some((sa, sb))
 }
 
 /// Whether `x` and `y` are collinear and overlap over more than a point without matching

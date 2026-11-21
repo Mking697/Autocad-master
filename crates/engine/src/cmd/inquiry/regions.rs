@@ -1,8 +1,9 @@
 //! Region booleans (UNION, SUBTRACT, INTERSECT) and MASSPROP.
 //!
-//! Disjoint/nested boundaries keep their original curves. Boundaries sharing complete edges
-//! or vertices are merged into outlines; proper crossings and partial edge overlaps still
-//! require curve splitting and report "not available yet".
+//! Disjoint/nested boundaries keep their original curves. Boundaries sharing complete edges,
+//! vertices or a proper crossing are merged into outlines by splitting at every crossing first
+//! (see [`region_merge::split_crossings`]); boundaries that overlap collinearly for part of
+//! their length without matching endpoint-for-endpoint still report "not available yet".
 
 use cadcraft_doc::{EntityKind, Handle, HatchLoop, MAX_REGION_LOOPS, Region};
 use cadcraft_geom::{Line, PolyVertex, Vec2, line_line, point_in_polygon};
@@ -108,14 +109,16 @@ enum Op {
     Intersect,
 }
 
-/// `a` op `b` for regions whose boundaries don't cross into each other's interior; `None` when
-/// they do (overlapping regions are not available yet).
+/// `a` op `b`, merging touching or properly crossing boundaries into the result; `None` when
+/// they overlap collinearly without matching endpoint-for-endpoint (not available yet).
 ///
-/// Boundaries that merely touch (a shared vertex or a whole shared edge) are merged at the edge
-/// level by [`region_merge`]: each unique edge is kept, oriented with the result's interior on
-/// its left, when the op's result differs on its two sides (e.g. the wall shared by two abutting
-/// squares disappears from a UNION but stays in a SUBTRACT). Boundaries that don't meet at all
-/// take the faster whole-loop path, which also keeps arcs and bulges intact.
+/// Boundaries that don't meet at all take the faster whole-loop path, which also keeps arcs and
+/// bulges intact. Otherwise every crossing between the two boundaries is split into a shared
+/// vertex first ([`region_merge::split_crossings`]), turning proper intersections into the same
+/// kind of touching graph as a shared edge or vertex; [`region_merge::merge`] then keeps each
+/// unique edge oriented with the result's interior on its left, when the op's result differs on
+/// its two sides (e.g. the wall shared by two abutting squares disappears from a UNION but stays
+/// in a SUBTRACT), and traces the kept edges into closed loops.
 fn combine(a: &Region, b: &Region, op: Op) -> Result<Option<Region>> {
     let size = a.bounds().union(&b.bounds());
     let tol = ((size.width() + size.height()) * 1e-6).max(1e-12);
@@ -138,10 +141,11 @@ fn combine(a: &Region, b: &Region, op: Op) -> Result<Option<Region>> {
         r.renest();
         return Ok(Some(r));
     }
-    if region_merge::has_unsupported_crossing(&ta, &tb, meet_tol) {
+    if region_merge::has_unsupported_overlap(&ta, &tb, meet_tol) {
         return Ok(None);
     }
-    let Some(merged) = region_merge::merge(&ta, &tb, op, meet_tol) else { return Ok(None) };
+    let Some((sta, stb)) = region_merge::split_crossings(&ta, &tb, meet_tol) else { return Ok(None) };
+    let Some(merged) = region_merge::merge(&sta, &stb, op, meet_tol) else { return Ok(None) };
     if merged.len() > MAX_REGION_LOOPS {
         return Err(other("Too many loops."));
     }
