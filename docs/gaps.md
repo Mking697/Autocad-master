@@ -9,6 +9,77 @@ are Opus 5.5 agent-hours, calibrated as explained there. "Est." means a judgemen
 evidence. Rows marked **[alpha blocker]** are what fails the [alpha gate](roadmap.md#alpha-gate);
 do them first.
 
+## Phased execution plan
+
+Working order for the whole backlog, decided 2026-11-21. Each phase gates the next one for a
+typical user's trust (small stuff first within a phase, since it compounds fastest); within a
+phase, pick the smallest unchecked row first and verify scope by reading the code before trusting
+the Est. hours (some are stale). Mark a row `[x]` **in this list** the session it actually lands
+(commit SHA in parentheses) — the row itself may still carry extra detail or get removed from its
+section below once fully closed. Don't reorder phases; narrowing an estimate or re-ranking inside
+a phase is fine.
+
+### Phase 1 — small alpha-adjacent stubs (≈1–5h each, no new subsystem)
+- [x] F1 (colour books only): -LAYER/-ATTEDIT Colorbook keyword (`48cea109`)
+- [ ] F1 (remainder): -RENAME of materials — re-scope first: CADCraft has no material table at
+      all, so this needs a minimal named-only table before RENAME can use it (bigger than 1–2h)
+- [ ] F19: MATCHPROP Settings dialog (currently a keyword prompt only), material/shadow/
+      centre-object settings
+- [ ] F20: right-click customization, autosave interval + default save version UI (features
+      exist, just no Options tab control), AutoSnap magnet/tooltip toggles, drawing-area element
+      colours, named profiles import/export
+- [ ] F4: autosave files as DXF not DWG; no separate RECOVER mode in the file readers
+- [ ] FF3: no R14 DWG / R12 DXF output; Save dialog can't pick version per file; no command-line
+      SAVEAS format prompt
+- [ ] FF4: Johab/DOS code pages on save (currently always declares ANSI_1252)
+- [ ] U10: keep narrowing SETVAR (≈167 of ~1,000; pick the next batch of header-backed variables)
+- [ ] S4: remaining open correctness item (#134, browser plot shows raw PDF bytes) — may belong to
+      P1 instead, check both before starting
+- [ ] U13: `.dxf` from Finder fails to open on macOS (#158)
+
+### Phase 2 — alpha-gate rows, medium (≈4–25h each)
+- [ ] F14 **[alpha blocker]**: plot styles can't read binary `.ctb`/`.stb`/`.pc3`; no system
+      printers; PDF plot margin and plot-transparency DXF/DWG gaps
+- [ ] F2: XCLIP; REFEDIT in-place editing of an **xref's** source (currently blocks only); nested
+      reference picking; locked-drawing banner; ATTSYNC of other references
+- [ ] Row 1 (precision input) **[alpha blocker]**: object snap tracking/extension/parallel real
+      behaviour, FROM/M2P/TK, typed snap overrides, editable dynamic input — only the parts not
+      already landed (check current state first; several sub-items may already be done)
+- [ ] F5: array grip editing, ARRAYPATH associativity, ARRAYEDIT item deletion/key points
+- [ ] F7: DIMSTYLE manager dialog, smart DIM, DIMUPT/DIMTXTDIRECTION, jog height/break size as
+      style settings
+- [ ] F10: multileader collection landing/block model, MLEADERSTYLE per-style block content
+
+### Phase 3 — big alpha blockers (≈30–90h each; scope and split into sub-PRs before starting)
+- [ ] Top-10 #1 **[alpha blocker]**: lossless DWG save (acadrust custom classes/xdata/colour
+      books/reactors) — DXF side is mostly done already, check current state
+- [ ] Top-10 #2 **[alpha blocker]**: real-file DWG/DXF corpus + AutoCAD black-box check (needs
+      the human owner for the AutoCAD check half; the corpus/test half is agent-doable)
+- [ ] Top-10 #3: exact ellipse/spline geometry (intersections, offsets, closest points; bulge-
+      aware polyline offset)
+- [ ] Top-10 #4 / F3 **[alpha blocker]**: dynamic-block authoring (parameters and actions in the
+      Block Editor) — references/editing already work, only authoring is missing
+- [ ] FF6 **[alpha blocker]**: DWG throughput (10 MB took ~2 min to fail, #57)
+
+### Phase 4 — beta checklist (everything else `docs/roadmap.md`'s beta section lists)
+- [ ] Annotation depth: remaining F7/F9/F10/F12 items, tables (F11), fields
+- [ ] Blocks/xrefs/dynamic blocks/groups/attributes: remaining F2/F3/F17 items after phase 2/3
+- [ ] Plot styles/preview/PUBLISH remainder (F14 leftovers not in phase 2)
+- [ ] File formats: FF2, FF7–FF14 (multileader overrides, SHX fonts, PDF import, other exchange
+      formats, DWG-in-web, pre-R13)
+- [ ] Stability: S5 (no command smoke sweep), broader geometry fuzzing
+- [ ] Platforms: P1–P3 remainder
+- [ ] UI/UX: remaining U rows not already in phase 1/2 (U1, U2/U8/U9 if any remain, U6, U7)
+
+### Phase 5 — post-beta / full parity (largest; each is its own multi-month effort)
+- [ ] M11 / 3D: UCS, orbit, visual styles, solids, surfaces, meshes, sections, rendering
+      (300–450h, needs `plan/adr/0001` geometry-library decisions)
+- [ ] E1/E5: AutoLISP beyond the core (Visual LISP ActiveX, DCL, reactors), CUI session
+      persistence
+- [ ] F23: Sheet Set Manager, eTransmit, Share, Traces, Markup Import, Activity Insights
+- [ ] L1–L4: localization catalogs beyond German/Ukrainian, complex-script shaping, IME
+- [ ] A1–A3: AI features (Smart Blocks equivalent, in-app assistant beyond MCP, Markup Assist)
+
 ## Top 10 across everything
 
 | # | Gap | Why it ranks here | Est. | Doc |
