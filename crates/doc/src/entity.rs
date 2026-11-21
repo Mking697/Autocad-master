@@ -504,6 +504,25 @@ pub struct Insert {
     pub col_spacing: f64,
     #[serde(default)]
     pub row_spacing: f64,
+    /// In-session XCLIP boundary in block-definition coordinates. DXF/DWG SPATIAL_FILTER
+    /// import/export and display-list clipping are not implemented yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip: Option<InsertClip>,
+}
+/// A reference's independent clipping region. Uses the same closed polyline geometry as
+/// viewport boundaries, but owns it rather than referring to a drawable boundary entity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsertClip {
+    pub boundary: LwPolyline,
+    #[serde(default = "yes")]
+    pub on: bool,
+    #[serde(default)]
+    pub inverted: bool,
+    #[serde(default)]
+    pub front: Option<f64>,
+    #[serde(default)]
+    pub back: Option<f64>,
 }
 fn unit_scale() -> Vec3 {
     Vec3::new(1.0, 1.0, 1.0)

@@ -278,6 +278,7 @@ fn add_block(d: &mut Drawing, name: &str, objs: &[(&Entity, Color)], renames: &R
             rows: 1,
             col_spacing: 0.0,
             row_spacing: 0.0,
+            clip: None,
         };
         let h = d.new_handle();
         d.model.push(Entity::new(h, EntityKind::Insert(reference)));
