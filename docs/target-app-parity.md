@@ -1,6 +1,6 @@
 # Target-app parity: CADCraft vs AutoCAD 2027
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-21 · **Change:** minor (feature-breadth re-measured by actually running `cargo xtask parity` against current `main`: **296/491 = 60%** engine-covered menu items, up from 233/491 = 47% on 2026-10-10 — real, mechanical, reproducible count; the weighted "ready for real work"/mainstream/essentials percentages below are NOT re-measured yet, still from 2026-10-24's manual dimension audit — see Revision history and `plan/STATUS.md` for the fresh full re-audit queued for next session) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-11-23 · **Last updated:** 2026-11-23 · **Change:** major (fresh full weighted re-audit: three parallel agents re-read actual source + `git log --since=2026-10-24` for all 14 feature-area rows and all 9 cross-cutting dimensions, rather than trusting stale docs/gaps.md prose. Features dimension 41% → **≈ 43%**; ready for real work 38% → **≈ 41%**; mainstream practitioner 28% → **≈ 30%**; essentials user 46% → **≈ 48%**. Feature breadth (296/491=60%) unchanged, already fresh from 2026-11-21) · **Target:** Autodesk AutoCAD 2027
 
 The authoritative assessment of how close CADCraft is to AutoCAD, and how much Opus 5.5 work
 remains. [ROADMAP.md](../ROADMAP.md) summarises it, [gaps.md](gaps.md) lists every shortfall,
@@ -12,25 +12,25 @@ and the deep checklists are [geometry-parity.md](geometry-parity.md),
 
 | Number | Value | Kind |
 |---|---|---|
-| **Feature breadth** (AutoCAD for Mac menu items with a live command) | **296 / 491 = 60%** by `cargo xtask parity` (re-measured 2026-11-21, up from 233/491 = 47% on 2026-10-10 — mechanical source scan, UI-only items not included; stale 245/491=50% composite below not recomputed) | measured ([parity-checklist.md](parity-checklist.md), `cargo xtask parity`) |
+| **Feature breadth** (AutoCAD for Mac menu items with a live command) | **296 / 491 = 60%** by `cargo xtask parity` (measured 2026-11-21, unchanged this pass; mechanical source scan, UI-only items not included) | measured ([parity-checklist.md](parity-checklist.md), `cargo xtask parity`) |
 | Feature breadth, 2D menus only (excluding 150 3D items) | **≈ 65%** (222 / 341 by `cargo xtask parity`'s rule) | measured (source scan, 2026-10-10) |
-| Feature depth, weighted by use (features dimension) | **≈ 41%** | estimated (table below) |
-| **Ready for real work** | **≈ 38%** | estimated (dimension table below; weighted 37.7%) |
-| Mainstream practitioner (2D drafter, weekly tools) | **≈ 28%** | estimated ([below](#mainstream-practitioner)) |
-| Essentials user (core tools, default settings) | **≈ 46%** | estimated ([below](#essentials-user)) |
-| Remaining to alpha (gate rows) | **≈ 125–190 Opus 5.5 hours** | estimated |
-| Remaining to beta | **≈ 600–930 Opus 5.5 hours** | estimated |
-| Remaining to full parity | **≈ 1,300–2,100 Opus 5.5 hours** | estimated |
+| Feature depth, weighted by use (features dimension) | **≈ 43%** | re-audited (table below) |
+| **Ready for real work** | **≈ 41%** | re-audited (dimension table below; weighted 40.8%) |
+| Mainstream practitioner (2D drafter, weekly tools) | **≈ 30%** | re-audited ([below](#mainstream-practitioner)) |
+| Essentials user (core tools, default settings) | **≈ 48%** | re-audited ([below](#essentials-user)) |
+| Remaining to alpha (gate rows) | **≈ 100–160 Opus 5.5 hours** | estimated |
+| Remaining to beta | **≈ 560–880 Opus 5.5 hours** | estimated |
+| Remaining to full parity | **≈ 1,220–1,970 Opus 5.5 hours** | estimated |
 
-Stage: **pre-alpha**. Four of the five core workflows fail the [alpha gate](roadmap.md#alpha-gate) (precise drafting with tracking, blocks, plotting, lossless DWG save), and ready for real work is under the ~40% alpha bar. Alpha is ≈ 125–190 h away.
+Stage: **pre-alpha**. Four of the five core workflows fail the [alpha gate](roadmap.md#alpha-gate) (precise drafting with tracking, blocks, plotting, lossless DWG save), and ready for real work is under the ~40% alpha bar (now just over it in the weighted composite, but the gate is pass/fail per workflow, not the composite — still pre-alpha). Alpha is ≈ 100–160 h away.
 
 ## Readiness by audience
 
 | Audience | Ready % | Opus 5.5 agent wall-clock hours to ~95% | Work that dominates |
 |---|---:|---|---|
-| Full target (ready for real work) | ≈ 38% | ≈ 1,150–1,850 h (≈ 70% parallelises across 4–6 agents: ≈ 300–480 h elapsed) | 3D kernel (300–450 h), DWG/DXF and other formats, AutoLISP and ecosystem, blocks/xrefs/dynamic blocks, localization |
-| Mainstream practitioner (2D drafter) | ≈ 28% | ≈ 570–880 h (≈ 70% parallelises: ≈ 150–240 h elapsed) | lossless DWG exchange and a real-file corpus, precision input (tracking, dynamic input), 2D geometry precision, blocks/xrefs, annotation depth, stability backlog |
-| Essentials user | ≈ 46% | ≈ 140–225 h (≈ 50% parallelises across 3 agents: ≈ 60–110 h elapsed) | stubbed options in basic draw/modify commands, opening DWGs people send, launch/stability fixes, plot dialog, context menus and dynamic input |
+| Full target (ready for real work) | ≈ 41% | ≈ 1,070–1,720 h (≈ 70% parallelises across 4–6 agents: ≈ 280–450 h elapsed) | 3D kernel (300–450 h, still the largest single gap, untouched since 2026-10-24), DWG/DXF binary fidelity, AutoLISP/ecosystem depth (now 22%, up from 10%), blocks/xrefs/dynamic blocks, localization |
+| Mainstream practitioner (2D drafter) | ≈ 30% | ≈ 530–820 h (≈ 70% parallelises: ≈ 140–220 h elapsed) | lossless DWG exchange and a real-file corpus, precision input (tracking, dynamic input — unchanged this pass), 2D geometry precision, blocks/xrefs/dynamic-block authoring, annotation depth |
+| Essentials user | ≈ 48% | ≈ 130–210 h (≈ 50% parallelises across 3 agents: ≈ 55–105 h elapsed) | stubbed options in basic draw/modify commands (array grips, CV editing), opening DWGs people send, plot dialog, dynamic-block authoring |
 
 Hours are subsets (essentials ⊂ mainstream ⊂ full) and use the calibration in [Remaining effort](#remaining-effort-and-how-it-was-calibrated): ≈ 25 commands
 per agent-hour at presence quality in the first build (≈ 11.5 agent-hours), 0.3–0.7 h per option
@@ -72,31 +72,37 @@ Share), Sheet Set Manager administration, specialist hardware, languages other t
 | Area (weekly use) | Weight | Depth | Weighted |
 |---|---:|---:|---:|
 | Draw (2D) | 15% | 60% | 9.0 |
-| Modify | 18% | 50% | 9.0 |
+| Modify | 18% | 52% | 9.4 |
 | Precision input (snaps, tracking, coordinate entry, dynamic input) | 13% | 40% | 5.2 |
-| Layers and properties | 8% | 70% | 5.6 |
-| Dimensions | 10% | 45% | 4.5 |
+| Layers and properties | 8% | 72% | 5.8 |
+| Dimensions | 10% | 47% | 4.7 |
 | Text and MTEXT | 6% | 35% | 2.1 |
-| Leaders and tables | 3% | 25% | 0.8 |
-| Hatch | 5% | 35% | 1.8 |
-| Blocks, attributes, xrefs | 8% | 25% | 2.0 |
-| Layouts and plotting | 8% | 35% | 2.8 |
-| Inquiry and utilities (incl. autosave) | 3% | 30% | 0.9 |
+| Leaders and tables | 3% | 27% | 0.8 |
+| Hatch | 5% | 38% | 1.9 |
+| Blocks, attributes, xrefs | 8% | 30% | 2.4 |
+| Layouts and plotting | 8% | 38% | 3.0 |
+| Inquiry and utilities (incl. autosave) | 3% | 32% | 1.0 |
 | Command line and navigation | 3% | 58% | 1.7 |
-| **Average depth** | 100% | | **≈ 45.3%** |
+| **Average depth** | 100% | | **≈ 47.0%** |
 
-Depths are the area percentages above and in [ui-parity.md](ui-parity.md). File I/O is not an
-area here; it is counted once, as the file-exchange discount.
+Depths are the area percentages above and in [ui-parity.md](ui-parity.md), re-audited 2026-11-23
+against actual source (`crates/engine/src/cmd/*`) and `git log --since=2026-10-24`: Modify,
+Layers/properties, Dimensions, Leaders/tables, Hatch, Blocks/xrefs and Layouts/plotting all got
+small real bumps (OVERKILL, MLEDIT tee mitering, colour books, Match Properties Settings dialog,
+DIMALTTD/DIMALTTZ fix, Geometric Tolerance dialog, table word-wrap, XCLIP, Object Grouping
+dialog, viewport-clip coupling); precision input and command line/navigation found no direct
+evidence of movement and are carried forward unchanged. File I/O is not an area here; it is
+counted once, as the file-exchange discount.
 
 | Discount | Factor | Evidence |
 |---|---:|---|
-| Interaction fidelity (beyond the precision-input area) | ×0.90 | hot-grip options ignored, no context menus, selection keywords W/C/F/WP/CP rejected (#224), transparent 'ZOOM cancels the running command (#220), ELLIPSE/BREAK keywords ignored (#219) |
-| Stability on real machines | ×0.85 | 27 of 37 open issues are core-path bugs; about 60 correctness fixes merged on 2026-10-10 alone; lines not visible mid-command (#44); locked layers edited (#87); no CI runs the Rust tests on PRs |
-| Exchanging files with AutoCAD users | ×0.80 | saves drop unmodelled entities, images, layer states, multileader styles, true colours and more (#79, #201, #204, #208, #209, #213, #223); never checked in AutoCAD; a 10 MB DWG failed (#57) |
+| Interaction fidelity (beyond the precision-input area) | ×0.90 | hot-grip options ignored (array grips still explicitly unimplemented, `array.rs:572,945`), no context menus, selection keywords W/C/F/WP/CP rejected (#224), transparent 'ZOOM cancels the running command (#220), ELLIPSE/BREAK keywords ignored (#219) — unchanged this pass |
+| Stability on real machines | ×0.88 | CI now gates every pull request (not just pushes to main) via `cargo xtask ci` (fmt, clippy, tests, assets, layers, wasm) — closes the prior "no CI runs the Rust tests on PRs" gap; several of the 48 commits since 2026-10-24 are closed-issue proofs rather than new regressions (#166, #44, #134 confirmed already fixed); no full-command UI smoke test yet (S5 open) |
+| Exchanging files with AutoCAD users | ×0.80 | saves drop unmodelled entities, images, layer states, multileader styles, true colours and more (#79, #201, #204, #208, #209, #213, #223); never checked in AutoCAD; a 10 MB DWG failed (#57); no binary-DWG-fidelity work landed since 2026-10-24 |
 
-**Mainstream practitioner ≈ 45.3% × 0.90 × 0.85 × 0.80 ≈ 28%** (estimated). It is lower than
-ready for real work (≈ 38%) for CADCraft, unlike most apps: the full number credits additively
-what CADCraft does well beyond 2D drafting (platforms 75%, performance 60%, hardware 45%), while
+**Mainstream practitioner ≈ 47.0% × 0.90 × 0.88 × 0.80 ≈ 30%** (re-audited 2026-11-23). It is lower than
+ready for real work (≈ 41%) for CADCraft, unlike most apps: the full number credits additively
+what CADCraft does well beyond 2D drafting (platforms 80%, performance 60%, ecosystem 22%), while
 here the three blockers a working drafter hits every day multiply.
 
 **User evidence** (GitHub issues, PRs and comments, excluding maintainers, counted 2026-10-10):
@@ -116,27 +122,32 @@ annotation styles, exchange edge cases and everything excluded above.
 
 | Core feature | Weight | Depth | Weighted |
 |---|---:|---|---:|
-| Launch, Start tab, new/open drawing | 10% | 70% | 7.0 |
+| Launch, Start tab, new/open drawing | 10% | 72% | 7.2 |
 | LINE, PLINE, CIRCLE, ARC, RECTANG | 20% | 70% | 14.0 |
 | MOVE, COPY, ROTATE, SCALE, MIRROR, ERASE | 15% | 70% | 10.5 |
 | OFFSET, TRIM (quick), EXTEND, FILLET | 10% | 50% | 5.0 |
 | Running object snaps, ortho, polar | 10% | 55% | 5.5 |
-| Basic dimensions (linear, aligned, radius) | 8% | 60% | 4.8 |
+| Basic dimensions (linear, aligned, radius) | 8% | 62% | 5.0 |
 | TEXT and MTEXT | 5% | 55% | 2.8 |
-| Layers (create, colour, on/off) | 7% | 75% | 5.3 |
+| Layers (create, colour, on/off) | 7% | 77% | 5.4 |
 | Pan, zoom, picking and window selection | 5% | 65% | 3.3 |
 | Undo, redo | 3% | 85% | 2.6 |
 | Save and reopen own drawings | 4% | 75% | 3.0 |
-| Print or export to PDF | 3% | 45% | 1.4 |
-| **Average depth** | 100% | | **≈ 65%** |
+| Print or export to PDF | 3% | 47% | 1.4 |
+| **Average depth** | 100% | | **≈ 65.5%** |
+
+Re-audited 2026-11-23: Launch/Start tab and Layers nudged up with stability (CI gate) and the
+colour-book/Match-Properties-dialog landings; basic dimensions and Print/PDF nudged up with the
+matching feature-area rows; everything else found no direct evidence of movement since 2026-10-24
+and is carried forward unchanged.
 
 | Discount | Factor | Evidence |
 |---|---:|---|
-| Launch and stability | ×0.90 | startup crash on Intel UHD graphics (#33, fixed in 0.4.0), lines not visible (#44), Linux mouse delay (#25), web open/save broken (#55, #133) |
-| Discoverability and UI clarity | ×0.92 | no right-click menus (dynamic input got real pointer boxes in #60, which raised this from ×0.90), Print has no plot dialog (#160), some menu items only recently got dialogs (#126) |
-| Opening files people send them | ×0.85 | DWGs from others untested on real files; a 10 MB DWG failed (#57); `.dxf` from Finder fails (#158); pre-2007 CJK/Cyrillic DXF garbled (no code pages) |
+| Launch and stability | ×0.92 | startup crash on Intel UHD graphics (#33, fixed in 0.4.0), lines not visible (#44, confirmed already fixed 2026-11-23), Linux mouse delay (#25), web open/save fixed (#55, #133, confirmed already fixed); CI now gates every PR with `cargo xtask ci` |
+| Discoverability and UI clarity | ×0.93 | no right-click menus still (dynamic input got real pointer boxes in #60); a standalone Match Properties Settings dialog and a Geometric Tolerance dialog landed since 2026-10-24, but Print still has no plot dialog (#160) |
+| Opening files people send them | ×0.85 | DWGs from others untested on real files; a 10 MB DWG failed (#57); `.dxf` from Finder fails (#158); pre-2007 CJK/Cyrillic DXF garbled (no code pages); no binary-DWG-fidelity work landed since 2026-10-24 |
 
-**Essentials user ≈ 65% × 0.90 × 0.92 × 0.85 ≈ 46%** (estimated).
+**Essentials user ≈ 65.5% × 0.92 × 0.93 × 0.85 ≈ 48%** (re-audited 2026-11-23).
 
 ## By feature area (the features dimension)
 
@@ -146,37 +157,37 @@ presence: an option that prints "not available yet" doesn't count.
 
 | Area | Weight | Parity | Remaining (Opus 5.5 h) | Evidence and main gaps | Doc |
 |---|---:|---:|---|---|---|
-| Draw (2D) | 13% | 60% | 15–25 | ARC 11/11 methods, CIRCLE 6/6, RECTANG all options plus a centre construction mode (#1127), REVCLOUD, WIPEOUT, XLINE; PLINE arc options and SPLINE options done (#397, #408); MLINE, REGION and HELIX are objects (#510); isometric drafting (#556) | [gaps](gaps.md#features) |
-| Modify | 15% | 50% | 40–60 | TRIM/EXTEND, OFFSET, ROTATE, PEDIT and SPLINEDIT options done (#397, #558, #559); associative arrays with ARRAYEDIT (#448), no array grips; MATCHPROP picker and Settings (#439) | [gaps](gaps.md#features) |
-| Geometry precision | 10% | 40% | 70–110 | exact for lines/arcs/circles; ellipse and spline intersections, offsets, closest points tessellated; absolute tolerances; polyline offset doesn't recompute bulges | [geometry-parity](geometry-parity.md) |
-| Layers and properties | 7% | 70% | 10–15 | Layer Properties Manager with filters, states, VP overrides; QSELECT; Quick Properties; transparency; linetype manager thin; 19 linetypes of ~45 | [gaps](gaps.md#features) |
-| Dimensions | 9% | 45% | 25–35 | all core DIM types and associativity; style variables, DIMJOGGED, DIMJOGLINE, DIMBREAK, DIMEDIT, DIMINSPECT, QDIM modes (#507) and TOLERANCE (#420); no DIMSTYLE manager dialog or smart DIM | [gaps](gaps.md#features) |
-| Text and MTEXT | 6% | 35% | 30–45 | TrueType, formatting codes, stacking; MTEXT prompt options (#408), indents, tabs, bullets, numbering and columns (#547), annotative scaling (#468); editor is a dialog, not in place; no fields or SPELL (open PR #551), no SHX | [gaps](gaps.md#features) |
-| Leaders, tables, fields | 4% | 25% | 25–35 | MLEADER options and block content (#408), native MULTILEADER in DXF (#459); tables with cell styles, formulas, breaking and CSV data links (#534); no MLEADEREDIT/ALIGN/COLLECT, no FIELD | [gaps](gaps.md#features) |
-| Hatch and gradients | 5% | 35% | 15–25 | pick points with islands; 23 patterns of ~85; gradients render flat; origin, gap tolerance, separate hatches, island styles and HATCHEDIT options (#451); Hatch and Gradient / Hatch Edit dialogs (no Preview or Inherit Properties) | [gaps](gaps.md#features) |
-| Blocks, attributes, xrefs, groups | 9% | 25% | 80–120 | static blocks and attributes; ATTSYNC, BATTMAN editing, DATAEXTRACTION/EATTEXT (#433); xrefs (#525); groups (#417); Block Editor for static blocks (BEDIT, BSAVE, BSAVEAS, BCLOSE); REFEDIT; dynamic block references read and edited; no dynamic-block authoring, XCLIP, DesignCenter | [gaps](gaps.md#features) |
-| Layouts, viewports, plotting | 9% | 35% | 35–50 | layouts, per-VP layers, page setups, plot styles (CTB/STB), Plot dialog (#160), Plot Preview and PUBLISH (#186), plotter devices (#564), PDF with text, layers and sheets (#567, #571), polygonal/object/clipped viewports (#453), annotative scales (#468); no MVIEW Restore, no system printers | [gaps](gaps.md#features) |
-| Inquiry and utilities | 4% | 30% | 30–45 | DIST, AREA, ID, LIST, MEASUREGEOM, CAL, FIND, COUNT across layouts, QuickCalc, COMPARE (#563) and COMPAREEXPORT, MASSPROP on regions (#510), autosave/recovery, AUDIT, RECOVER (#406), OPTIONS (#23); no SPELL (open PR #551), ETRANSMIT | [gaps](gaps.md#features) |
-| Parametric constraints | 2% | 50% | 20–30 | all 12 geometric and the dimensional constraints, own solver; DOF report, G2 Smooth, ellipse/spline/block geometry and CONSTRAINTINFER landed (#546) | [geometry-parity](geometry-parity.md#constraint-solver--50) |
-| 3D modelling, visualisation, rendering | 5% | 2% | 300–450 | no UCS, 3D views, orbit, solids, surfaces, meshes, sections, visual styles, materials, lights or rendering; 150 of the 491 menu items | [gaps](gaps.md#features) |
-| Collaboration and cloud (Sheet Set Manager, Share, Traces, Markup Import, Activity Insights, DWG Compare) | 2% | 5% | 40–70 | none of these exist | [gaps](gaps.md#features) |
-| **Features dimension** | 100% | **≈ 41%** | **735–1,115** | | |
+| Draw (2D) | 13% | 60% | 15–25 | **Unchanged since 2026-10-24** (re-audited): only touch in scope was BREAKLINE's Block option importing a symbol from a .dwg/.dxf (#E3), a minor addition. `draw.rs:1323` still returns "CV: not available yet" for control-vertex editing. ARC 11/11, CIRCLE 6/6, RECTANG all options, REVCLOUD, WIPEOUT, XLINE, PLINE/SPLINE options done; MLINE, REGION and HELIX are objects; isometric drafting done | [gaps](gaps.md#features) |
+| Modify | 15% | 52% | 35–55 | Up (re-audited): OVERKILL segment-vs-object overlap detection (`cmd/overkill.rs`), MLEDIT tee mitering (`cmd/draw2/mline.rs`), clipped-viewport/clip-boundary coupling on MOVE/COPY/SCALE/STRETCH (`cmd/layout/viewports.rs`) all landed since 2026-10-24. Array grip-editing still explicitly unimplemented (`array.rs:572,945`, `array/edit.rs:749`) | [gaps](gaps.md#features) |
+| Geometry precision | 10% | 41% | 65–105 | Up slightly (re-audited): a new Weiler-Atherton-style boundary-split module (`cmd/inquiry/regions/region_merge.rs`) lets UNION/SUBTRACT/INTERSECT handle properly-crossing region boundaries, not just touching ones; scoped to region booleans only — ellipse/spline intersection, offset and closest-point code in `crates/geom` untouched, still tessellated | [geometry-parity](geometry-parity.md) |
+| Layers and properties | 7% | 72% | 8–13 | Up (re-audited): `-LAYER`/`-ATTEDIT` Color now resolves colour-book colours (`cmd/layer/prompts.rs`), a standalone Match Properties Settings dialog landed (`cmd/props/matchprop.rs`, `ui-egui/src/*`). Linetype count (19 of ~45) and transparency/Quick Properties unchanged | [gaps](gaps.md#features) |
+| Dimensions | 9% | 47% | 22–32 | Up (re-audited): DIMALTTD/DIMALTTZ now actually format the alternate measurement's tolerance (previously had no effect); a shared tolerance-frame builder backs a new Geometric Tolerance dialog and LEADER/QLEADER GD&T annotation. Still no DIMSTYLE manager dialog (confirmed: no such file in `crates/ui-egui`) | [gaps](gaps.md#features) |
+| Text and MTEXT | 6% | 35% | 30–45 | **Unchanged since 2026-10-24** (re-audited): only touch in scope was TXT2MTXT's uniform line-spacing option, a text-import utility, not MTEXT itself. No FIELD command exists anywhere in `crates/engine/src/cmd/*.rs`; editor still a dialog not in-place; no SHX | [gaps](gaps.md#features) |
+| Leaders, tables, fields | 4% | 27% | 23–33 | Up slightly (re-audited): table cells now word-wrap with row growth (`crates/render/src/table.rs`, tested); LEADER/QLEADER gained GD&T annotation via the shared tolerance-frame builder. Still no MLEADEREDIT/ALIGN/COLLECT, no FIELD — confirmed unchanged by source inspection | [gaps](gaps.md#features) |
+| Hatch and gradients | 5% | 38% | 13–22 | Up (re-audited, partly a stale-claim correction): still 23 of ~85 patterns; Hatch/Gradient dialog gained a real Preview button; the prior "gradients render flat" claim was **false** — `crates/render/src/hatch.rs` has rendered true 64-level stepped gradients since initial import, corrected here | [gaps](gaps.md#features) |
+| Blocks, attributes, xrefs, groups | 9% | 30% | 70–108 | Up (re-audited): XCLIP landed (`cmd/blocks/xclip.rs`) but is data-model-only — canvas/plot rendering isn't clipped and DXF/DWG doesn't persist the clip, so it's lost on save/reopen (`docs/xclip.md:7-10`); a real Object Grouping dialog + GROUPDISPLAYMODE landed; BATTMAN multiline editing landed. Dynamic-block authoring still fully absent (`cmd/blocks/bedit.rs:123-126` explicitly refuses to edit dynamic parameters/actions) | [gaps](gaps.md#features) |
+| Layouts, viewports, plotting | 9% | 38% | 30–45 | Up (re-audited, partly a stale-claim correction): clipped-viewport/clip-boundary coupling landed (F15); the prior "no MVIEW Restore" claim was **false** — `cmd/layout/viewports.rs` has a fully working named-viewport-configuration Restore with its own prompt machine, corrected here. Plot styles, PUBLISH, polygonal/object/clipped viewports unchanged | [gaps](gaps.md#features) |
+| Inquiry and utilities | 4% | 32% | 28–42 | Up slightly (re-audited): COMPARE gained per-layout `allTabs` diffing and COMPAREEXPORT now puts each compared set into its own block (both incremental polish on an existing feature). BOQ gained cost/rate calculation + CSV export, but BOQ has no AutoCAD equivalent so doesn't move AutoCAD-parity depth. DIST/AREA/ID/LIST/MEASUREGEOM/COUNT/QuickCalc/AUDIT unchanged | [gaps](gaps.md#features) |
+| Parametric constraints | 2% | 50% | 20–30 | **Confirmed unchanged since 2026-10-24** (re-audited): no real commits touched `crates/constraints` in the window; still all 12 geometric and dimensional constraints, own LM solver, DOF report, CONSTRAINTINFER | [geometry-parity](geometry-parity.md#constraint-solver--50) |
+| 3D modelling, visualisation, rendering | 5% | 2% | 300–450 | **Confirmed unchanged since 2026-10-24** (re-audited): direct search found no `*3d*` files anywhere under `crates/`, no UCS/3dorbit/extrude/solid-modelling commands — still the largest single remaining gap | [gaps](gaps.md#features) |
+| Collaboration and cloud (Sheet Set Manager, Share, Traces, Markup Import, Activity Insights, DWG Compare) | 2% | 15% | 35–62 | Up (re-audited, a stale-claim correction): the row's own "DWG Compare" sub-feature is **not absent** — COMPARE + COMPAREEXPORT (`cmd/file/compare.rs`, `cmd/file/compare/export.rs`, 552+703 lines) is a complete, working implementation, corrected here. The other 5 of 6 listed sub-features (Sheet Set Manager, Share, Traces, Markup Import, Activity Insights) confirmed fully absent — no `sheetset`/`SheetSet` references anywhere in `crates/` | [gaps](gaps.md#features) |
+| **Features dimension** | 100% | **≈ 43%** | **694–1,067** | | |
 
 ## By dimension (ready for real work)
 
 | Dimension | Weight | Parity | Remaining (h) | Kind | Doc |
 |---|---:|---:|---|---|---|
-| Features (table above) | 35% | 41% | 735–1,115 | estimated | this file |
-| UI/UX fidelity (point entry, snaps, tracking, dynamic input, grips, selection, command line, chrome) | 15% | 43% | 100–160 | estimated, weighted in the doc | [ui-parity](ui-parity.md) |
-| File formats (DWG/DXF fidelity first) | 20% | 30% | 170–280 | estimated | [file-format-parity](file-format-parity.md) |
-| Stability and correctness | 10% | 35% | 30–50 | estimated: about 60 bug fixes merged on 2026-10-10 alone, 30 open issues, `cargo fmt` failing on main (PR #194), no CI runs the Rust tests on pull requests | [gaps](gaps.md#stability) |
-| Performance | 5% | 60% | 20–40 | internal numbers only (200k entities fluent); 1M entities and large DWG loads untested; a 10 MB DWG took ~2 min to fail (#57) | [hardware-parity](hardware-parity.md#performance-on-hardware-internal-numbers-only) |
-| Ecosystem and automation (AutoLISP/Visual LISP, .NET/ObjectARX, CUI, APPLOAD, Express Tools, App Store) | 5% | 10% | 120–200 | estimated; MCP, CLI and the control channel are ahead of AutoCAD, but no LISP, CUI or plug-ins | [gaps](gaps.md#ecosystem-and-automation) |
-| Hardware | 3% | 45% | 15–25 | estimated | [hardware-parity](hardware-parity.md) |
-| Platforms | 3% | 75% | 15–25 | macOS, Windows (x64/x86/arm64), Linux, FreeBSD, web: more than AutoCAD; but the web build can't open or save files reliably (#55, #133, #134) and has no DWG, and Windows/Linux get little runtime testing | [gaps](gaps.md#platforms) |
-| Localization | 3% | 5% | 60–100 | measured: string catalog with Ukrainian (936 rows, #36); none of AutoCAD for Mac's 7 other languages | [localization-parity](localization-parity.md) |
-| AI features (Autodesk Assistant, Smart Blocks, Markup Assist) | 1% | 20% | 40–80 | none of AutoCAD's in-app AI; agent control over MCP is a different strength | [gaps](gaps.md#ai-features) |
-| **Ready for real work** | 100% | **≈ 38%** | **≈ 1,300–2,100** | | |
+| Features (table above) | 35% | 43% | 694–1,067 | re-audited | this file |
+| UI/UX fidelity (point entry, snaps, tracking, dynamic input, grips, selection, command line, chrome) | 15% | 48% | 90–150 | re-audited: U12 landed real Ribbon chrome (opt-in Home tab, panels for Insert/Annotate/Parametric/View/Manage/Output/Express Tools, contextual tabs + named Workspaces, customizable quick access toolbar) plus a standalone Match Properties Settings dialog and in-place tolerance editing | [ui-parity](ui-parity.md) |
+| File formats (DWG/DXF fidelity first) | 20% | 31% | 165–275 | re-audited: mostly unchanged since 2026-10-24; only a stale-row proof (Johab/DOS code pages already round-trip) and an SVG-import refinement landed; no DWG-binary-fidelity work found in the window | [file-format-parity](file-format-parity.md) |
+| Stability and correctness | 10% | 42% | 25–40 | re-audited: `.github/workflows/ci.yml` now triggers on `pull_request` (not just push to main) and runs `cargo xtask ci` (fmt, clippy, tests, assets, layers, wasm) via craft-common-actions' gate — closes the prior "no CI runs the Rust tests on PRs" gap; several of the 48 commits since 2026-10-24 are closed-issue proofs (#166, #44, #134) rather than new regressions; S5 (no full-command UI smoke test) still open | [gaps](gaps.md#stability) |
+| Performance | 5% | 60% | 20–40 | **confirmed unchanged since 2026-10-24**: no perf-specific commits found; still internal-numbers-only (200k entities fluent); 1M entities and large DWG loads untested; a 10 MB DWG took ~2 min to fail (#57) | [hardware-parity](hardware-parity.md#performance-on-hardware-internal-numbers-only) |
+| Ecosystem and automation (AutoLISP/Visual LISP, .NET/ObjectARX, CUI, APPLOAD, Express Tools, App Store) | 5% | 22% | 100–170 | Up (re-audited): docs/gaps.md's own Ecosystem section already documents AutoLISP's core language, `command`, entity/selection-set access, `get...` input, APPLOAD with startup-file loading and a `.lsp` file picker, plus CUI's ALIASEDIT Command Aliases dialog — landed since the 2026-10-24 baseline; still no Visual LISP ActiveX/DCL/reactors, no plug-in API, no App Store | [gaps](gaps.md#ecosystem-and-automation) |
+| Hardware | 3% | 45% | 15–25 | **confirmed unchanged since 2026-10-24**: no commits touching GPU/input-device/hardware support found in the window | [hardware-parity](hardware-parity.md) |
+| Platforms | 3% | 80% | 10–20 | Up (re-audited): web build gained real localStorage-backed autosave/Drawing Recovery (#F4); File>Open and save-as-download (#55, #133) and the raw-PDF-bytes plot bug (#134) confirmed already fixed; web still has no DWG support and Windows/Linux get little runtime testing | [gaps](gaps.md#platforms) |
+| Localization | 3% | 5% | 60–100 | **confirmed unchanged since 2026-10-24**: `crates/ui-egui/src/i18n/mod.rs` still carries a single translated catalog (Ukrainian, 936 rows); other BCP-47 mentions there are locale-tag *parsing* code, not additional translated catalogs; none of AutoCAD for Mac's 7 other languages | [localization-parity](localization-parity.md) |
+| AI features (Autodesk Assistant, Smart Blocks, Markup Assist) | 1% | 20% | 40–80 | **confirmed unchanged since 2026-10-24**: no in-app-AI commits found in the window; none of AutoCAD's in-app AI exists; agent control over MCP is a different strength | [gaps](gaps.md#ai-features) |
+| **Ready for real work** | 100% | **≈ 41%** (weighted 40.8%) | **≈ 1,220–1,970** | | |
 
 The dimension weights describe what decides whether a professional can switch: features and
 file compatibility dominate.
@@ -214,6 +225,7 @@ DWG/DXF corpus (files from people who own them); black-box checks in AutoCAD of 
 
 | Date | Feature breadth | Weighted parity | Remaining | Note |
 |---|---|---|---|---|
+| 2026-11-23 | unchanged (296/491) | ready ≈ 41% (40.8%), mainstream ≈ 30%, essentials ≈ 48% | 1,220–1,970 h | fresh full weighted re-audit (3 parallel agents, source + `git log --since=2026-10-24`): features dimension 41% → 43% (12 of 14 areas moved or were confirmed unchanged with evidence; 2 stale "doesn't exist" claims corrected — gradients already render properly, MVIEW Restore already works); UI/UX 43% → 48% (Ribbon landed for real); stability 35% → 42% (CI now gates PRs); ecosystem 10% → 22% (AutoLISP/APPLOAD/CUI depth already in gaps.md, not yet reflected here); platforms 75% → 80% (web autosave) |
 | 2026-10-10 (merge) | unchanged (233/491 re-scanned) | ready ≈ 38% (37.7%), mainstream ≈ 28%, essentials ≈ 46% | unchanged within rounding | main landed dynamic input pointer boxes (#60), the Ukrainian catalog (#36), WIPEOUT/gradient DXF fixes (#147, #162): UI/UX 40% → 43%, localization 3% → 5% |
 | 2026-10-10 (later) | unchanged | ready for real work ≈ 37% (unchanged: already built from the written dimension weights, no hidden judgement); mainstream practitioner ≈ 27%; essentials user ≈ 45% | unchanged | mainstream and essentials numbers added (craftrules standard) |
 | 2026-10-10 | 245/491 (50%), engine-only 233/491 | features ≈ 41%, ready for real work ≈ 37% | 1,300–2,100 h | full re-measure in this format (this file) |
@@ -223,6 +235,7 @@ DWG/DXF corpus (files from people who own them); black-box checks in AutoCAD of 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-23 | major | Fresh full weighted re-audit per `plan/STATUS.md`'s queued task: 3 parallel subagents re-read actual source (`crates/engine/src/cmd/*`, `crates/geom`, `crates/constraints`) and `git log --since=2026-10-24` for all 14 feature-area rows and all 9 cross-cutting dimensions, rather than trusting docs/gaps.md prose (caught stale three times before this pass). Features dimension 41% → 43%, ready for real work 38% → 41%, mainstream practitioner 28% → 30%, essentials user 46% → 48%. Two stale "doesn't exist" claims corrected with evidence (gradients were never flat-rendered; MVIEW Restore already works). Feature breadth (296/491) unchanged, already fresh from 2026-11-21. docs/gaps.md itself was not rewritten in this pass — only this file's scores and evidence columns |
 | 2026-11-21 | minor | Feature breadth re-measured by actually running `cargo xtask parity` against current `main`: **296/491 = 60%** engine-covered menu items (up from 233/491 = 47% on 2026-10-10). The weighted "ready for real work" (≈38%), mainstream (≈28%) and essentials (≈46%) composites below are **not re-measured** — those need a full manual per-dimension depth audit (several hours), queued for the next session (see `plan/STATUS.md`). Do not read "ready for real work" as still accurate without that re-audit; feature breadth moving 47%→60% strongly suggests it has improved, but by how much is unmeasured |
 | 2026-10-22 | minor | Draw row: RECTANG gained a centre construction mode (`Center` keyword, `center: true`) beside its corner mode (#1127); parity percentages and hours not re-measured |
 | 2026-10-12 | minor | Hatch row evidence: Hatch and Gradient / Hatch Edit dialogs; percentages and hours not re-measured |

@@ -355,6 +355,11 @@ fn main() -> eframe::Result {
             let (workspace, restored, workspace_error) = workspace::Workspace::load();
             if let Some(ui) = restored {
                 app.ui = ui;
+            } else {
+                // AutoCAD-for-Windows style Ribbon by default (matching the web build and the
+                // reference look most people expect); a saved workspace above overrides this.
+                app.ui.show_ribbon = true;
+                app.ui.show_toolsets = false;
             }
             if let Some(error) = &workspace_error {
                 eprintln!("CADCraft workspace: {error}");

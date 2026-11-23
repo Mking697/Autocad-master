@@ -1,8 +1,8 @@
 # CADCraft roadmap
 
-**Stage: pre-alpha** · next: alpha, ~2 points (38% → 40% ready for real work) and ~125–190 Opus 5.5 hours away (the four failing core workflows of the [alpha gate](docs/roadmap.md#alpha-gate))
+**Stage: pre-alpha** · next: alpha, ~1 point (41% → ~42% ready for real work composite; the gate is per-workflow, not the composite) and ~100–160 Opus 5.5 hours away (the four failing core workflows of the [alpha gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-20 · **Change:** minor (Ribbon named workspaces, contextual block/text/table tabs, Quick Access Toolbar and local Info Bar; readiness estimates unchanged) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-11-23 · **Last updated:** 2026-11-23 · **Change:** major (fresh full weighted re-audit: ready for real work 38% → 41%, mainstream 28% → 30%, essentials 46% → 48%; see [target-app-parity.md](docs/target-app-parity.md) for full evidence) · **Target:** Autodesk AutoCAD 2027
 
 CADCraft targets full parity with AutoCAD (2D drafting first, then annotation, layouts and
 plotting, DWG, parametrics and 3D), plus what AutoCAD doesn't have: agent control over MCP, a
@@ -12,28 +12,29 @@ scriptable CLI, a web build, Linux and FreeBSD builds, and a free licence.
 Precise drafting lacks object snap tracking and has stubbed TRIM/EXTEND/OFFSET options; blocks
 can't be edited in a block editor (REFEDIT edits them in place, xrefs not yet); plots ignore plot styles; and a DWG saved by
 CADCraft drops everything it doesn't model and has never been checked in
-AutoCAD. Dimensioning passes. Ready for real work (≈ 38%) is also under the ~40% alpha bar. Beta
-is ≈ 600–930 h away.
+AutoCAD. Dimensioning passes. Ready for real work (≈ 41%) is now just over the ~40% alpha bar in
+the weighted composite, but the gate is pass/fail per workflow, not the composite — still
+pre-alpha. Beta is ≈ 560–880 h away.
 
 ## Headline numbers
 
 | Number | Value | Kind |
 |---|---|---|
-| Feature breadth (AutoCAD for Mac menu items with a live command) | **50%** (245 / 491; 2D menus only ≈ 65%) | measured ([parity-checklist.md](docs/parity-checklist.md) + UI-only commands) |
-| Ready for real work | **≈ 38%** | estimated ([target-app-parity.md](docs/target-app-parity.md)) |
-| Mainstream practitioner (2D drafter) | **≈ 28%** (lower than the full number: file exchange, stability and interaction discounts multiply) | estimated ([target-app-parity.md](docs/target-app-parity.md#mainstream-practitioner)) |
-| Essentials user | **≈ 46%** | estimated ([target-app-parity.md](docs/target-app-parity.md#essentials-user)) |
-| Remaining to alpha | **≈ 125–190 h** (the gate rows) | estimated |
-| Remaining to beta | **≈ 600–930 h** (≈ 150–250 h elapsed with 4–6 agents) | estimated |
-| Remaining to full parity | **≈ 1,300–2,100 h** (≈ 330–550 h elapsed) | estimated |
+| Feature breadth (AutoCAD for Mac menu items with a live command) | **60%** (296 / 491; 2D menus only ≈ 65%) | measured ([parity-checklist.md](docs/parity-checklist.md) + UI-only commands) |
+| Ready for real work | **≈ 41%** | re-audited ([target-app-parity.md](docs/target-app-parity.md)) |
+| Mainstream practitioner (2D drafter) | **≈ 30%** (lower than the full number: file exchange, stability and interaction discounts multiply) | re-audited ([target-app-parity.md](docs/target-app-parity.md#mainstream-practitioner)) |
+| Essentials user | **≈ 48%** | re-audited ([target-app-parity.md](docs/target-app-parity.md#essentials-user)) |
+| Remaining to alpha | **≈ 100–160 h** (the gate rows) | estimated |
+| Remaining to beta | **≈ 560–880 h** (≈ 150–240 h elapsed with 4–6 agents) | estimated |
+| Remaining to full parity | **≈ 1,220–1,970 h** (≈ 280–450 h elapsed) | estimated |
 
 ### Readiness by audience
 
 | Audience | Ready % | Opus 5.5 agent wall-clock hours to ~95% | Work that dominates |
 |---|---:|---|---|
-| Full target (ready for real work) | ≈ 38% | ≈ 1,150–1,850 h (≈ 70% parallelises across 4–6 agents: ≈ 300–480 h elapsed) | 3D kernel (300–450 h), DWG/DXF and other formats, AutoLISP and ecosystem, blocks/xrefs/dynamic blocks, localization |
-| Mainstream practitioner (2D drafter) | ≈ 28% | ≈ 570–880 h (≈ 70% parallelises: ≈ 150–240 h elapsed) | lossless DWG exchange and a real-file corpus, precision input (tracking, dynamic input), 2D geometry precision, blocks/xrefs, annotation depth, stability backlog |
-| Essentials user | ≈ 46% | ≈ 140–225 h (≈ 50% parallelises across 3 agents: ≈ 60–110 h elapsed) | stubbed options in basic draw/modify commands, opening DWGs people send, launch/stability fixes, plot dialog, context menus and dynamic input |
+| Full target (ready for real work) | ≈ 41% | ≈ 1,070–1,720 h (≈ 70% parallelises across 4–6 agents: ≈ 280–450 h elapsed) | 3D kernel (300–450 h, untouched since 2026-10-24), DWG/DXF binary fidelity, AutoLISP/ecosystem depth, blocks/xrefs/dynamic blocks, localization |
+| Mainstream practitioner (2D drafter) | ≈ 30% | ≈ 530–820 h (≈ 70% parallelises: ≈ 140–220 h elapsed) | lossless DWG exchange and a real-file corpus, precision input (tracking, dynamic input), 2D geometry precision, blocks/xrefs/dynamic-block authoring, annotation depth |
+| Essentials user | ≈ 48% | ≈ 130–210 h (≈ 50% parallelises across 3 agents: ≈ 55–105 h elapsed) | stubbed options in basic draw/modify commands (array grips, CV editing), opening DWGs people send, plot dialog, dynamic-block authoring |
 
 Hours are subsets (essentials ⊂ mainstream ⊂ full) and use the calibration in [target-app-parity.md](docs/target-app-parity.md#remaining-effort-and-how-it-was-calibrated): ≈ 25 commands
 per agent-hour at presence quality in the first build (≈ 11.5 agent-hours), 0.3–0.7 h per option
@@ -48,15 +49,15 @@ Hours are Opus 5.5 agent wall-clock hours, calibrated on this repo's own build: 
 
 | Dimension | Parity | Remaining (h) | Doc |
 |---|---:|---|---|
-| Features (depth, weighted by use) | 41% | 735–1,115 | [target-app-parity.md](docs/target-app-parity.md#by-feature-area-the-features-dimension) |
-| UI/UX fidelity | 43% | 100–160 | [ui-parity.md](docs/ui-parity.md) |
-| File formats | 30% | 170–280 | [file-format-parity.md](docs/file-format-parity.md) |
+| Features (depth, weighted by use) | 43% | 694–1,067 | [target-app-parity.md](docs/target-app-parity.md#by-feature-area-the-features-dimension) |
+| UI/UX fidelity | 48% | 90–150 | [ui-parity.md](docs/ui-parity.md) |
+| File formats | 31% | 165–275 | [file-format-parity.md](docs/file-format-parity.md) |
 | Hardware | 45% | 15–25 | [hardware-parity.md](docs/hardware-parity.md) |
 | Localization | 5% | 60–100 | [localization-parity.md](docs/localization-parity.md) |
 | Performance | 60% | 20–40 | [hardware-parity.md](docs/hardware-parity.md#performance-on-hardware-internal-numbers-only) |
-| Stability | 35% | 30–50 | [gaps.md](docs/gaps.md#stability) |
-| Platforms | 75% | 15–25 | [gaps.md](docs/gaps.md#platforms) |
-| Ecosystem and automation | 10% | 120–200 | [gaps.md](docs/gaps.md#ecosystem-and-automation) |
+| Stability | 42% | 25–40 | [gaps.md](docs/gaps.md#stability) |
+| Platforms | 80% | 10–20 | [gaps.md](docs/gaps.md#platforms) |
+| Ecosystem and automation | 22% | 100–170 | [gaps.md](docs/gaps.md#ecosystem-and-automation) |
 | AI features | 20% | 40–80 | [gaps.md](docs/gaps.md#ai-features) |
 
 ## Features
@@ -64,19 +65,19 @@ Hours are Opus 5.5 agent wall-clock hours, calibrated on this repo's own build: 
 | Area | Parity | Remaining (h) | Doc |
 |---|---:|---|---|
 | Draw (2D) | 60% | 15–25 | [gaps.md](docs/gaps.md#features) |
-| Modify | 50% | 40–60 | [gaps.md](docs/gaps.md#features) |
-| Geometry precision | 40% | 70–110 | [geometry-parity.md](docs/geometry-parity.md) |
-| Layers and properties | 70% | 10–15 | [gaps.md](docs/gaps.md#features) |
-| Dimensions | 45% | 25–35 | [gaps.md](docs/gaps.md#features) |
+| Modify | 52% | 35–55 | [gaps.md](docs/gaps.md#features) |
+| Geometry precision | 41% | 65–105 | [geometry-parity.md](docs/geometry-parity.md) |
+| Layers and properties | 72% | 8–13 | [gaps.md](docs/gaps.md#features) |
+| Dimensions | 47% | 22–32 | [gaps.md](docs/gaps.md#features) |
 | Text and MTEXT | 35% | 30–45 | [gaps.md](docs/gaps.md#features) |
-| Leaders, tables, fields | 25% | 25–35 | [gaps.md](docs/gaps.md#features) |
-| Hatch and gradients | 35% | 15–25 | [gaps.md](docs/gaps.md#features) |
-| Blocks, attributes, xrefs, groups | 25% | 80–120 | [gaps.md](docs/gaps.md#features) |
-| Layouts, viewports, plotting | 35% | 35–50 | [gaps.md](docs/gaps.md#features) |
-| Inquiry and utilities | 30% | 30–45 | [gaps.md](docs/gaps.md#features) |
+| Leaders, tables, fields | 27% | 23–33 | [gaps.md](docs/gaps.md#features) |
+| Hatch and gradients | 38% | 13–22 | [gaps.md](docs/gaps.md#features) |
+| Blocks, attributes, xrefs, groups | 30% | 70–108 | [gaps.md](docs/gaps.md#features) |
+| Layouts, viewports, plotting | 38% | 30–45 | [gaps.md](docs/gaps.md#features) |
+| Inquiry and utilities | 32% | 28–42 | [gaps.md](docs/gaps.md#features) |
 | Parametric constraints | 50% | 20–30 | [geometry-parity.md](docs/geometry-parity.md) |
 | 3D modelling and rendering | 2% | 300–450 | [gaps.md](docs/gaps.md#features) |
-| Collaboration and cloud | 5% | 40–70 | [gaps.md](docs/gaps.md#features) |
+| Collaboration and cloud | 15% | 35–62 | [gaps.md](docs/gaps.md#features) |
 
 ## Languages
 
@@ -119,6 +120,7 @@ Ranked; detail and the full beta checklist in [docs/roadmap.md](docs/roadmap.md)
 
 | Date | Entry |
 |---|---|
+| 2026-11-23 | Fresh full weighted parity re-audit (3 parallel agents, source + `git log --since=2026-10-24`, not docs/gaps.md prose): features dimension 41% → 43% (Modify, Geometry precision, Layers/properties, Dimensions, Leaders/tables, Hatch, Blocks/xrefs, Layouts/plotting, Inquiry/utilities and Collaboration all moved up on real evidence; Draw, Text/MTEXT, Parametric constraints and 3D confirmed genuinely unchanged); ready for real work 38% → 41%, mainstream 28% → 30%, essentials 46% → 48%. Two stale "doesn't exist" claims corrected (gradients already render properly; MVIEW Restore already works). Full detail and evidence citations in [target-app-parity.md](docs/target-app-parity.md). |
 | 2026-11-20 | Ribbon Quick Access Toolbar supports saved button choices, command enablement and narrow-window scrolling. Local Info Bar shows document/space/dirty state and launches registered commands/aliases. Contextual tabs and online collaboration remain pending; no readiness-percentage change. |
 | 2026-10-21 | DXF save keeps each proxy object's and proxy entity's class: its class number (group 91) is renumbered to the rewritten CLASSES instead of naming another class, so AutoCAD's visual styles in an R14 file no longer come back as SCALE or MLEADERSTYLE (#1812) |
 | 2026-10-14 | HATCHEDIT adds boundaries from internal points or closed objects and removes selected loops in the dialog, command line and JSON command; associative links and undo are covered by tests. |
@@ -137,6 +139,7 @@ Ranked; detail and the full beta checklist in [docs/roadmap.md](docs/roadmap.md)
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-23 | major | Fresh full weighted re-audit: ready for real work 38% → 41%, mainstream 28% → 30%, essentials 46% → 48%; all Features and By-dimension table rows updated with evidence. See [target-app-parity.md](docs/target-app-parity.md) revision history for the full breakdown. |
 | 2026-11-20 | minor | U12 narrowed: Ribbon Quick Access Toolbar and local Info Bar; estimates unchanged. |
 | 2026-10-21 | trivial | Progress log: proxy objects keep their class through a save (#1812) |
 | 2026-10-14 | minor | Progress log: HATCHEDIT boundary add/remove |
