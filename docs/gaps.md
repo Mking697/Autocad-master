@@ -28,6 +28,14 @@ a phase is fine.
       under "NEXT SESSION FIRST TASK". Do this before picking up Phase 1/2 rows below, so the
       percentage reported to the user reflects everything already landed, not a stale estimate
 
+### Pending owner requirements (blocked on the owner, not sized yet)
+- [ ] BOQ (Bill of Quantities) custom workflow: owner wants a specific method for generating BOQ
+      from a drawing, to be described in the next session (2026-11-24). The existing `boq` command
+      (`crates/engine/src/cmd/boq.rs`) already does layer-wise length/area/block-count takeoff with
+      optional rates, cost totals and CSV export (demoed live on `cadcraft-cli sample floorplan`:
+      16 entities, 4 layers costed, CSV exported — see `plan/STATUS.md`'s pending section for the
+      numbers). Don't redesign or extend this until the owner's method is in hand.
+
 ### Phase 1 — small alpha-adjacent stubs (≈1–5h each, no new subsystem)
 - [x] F1 (colour books only): -LAYER/-ATTEDIT Colorbook keyword (`48cea109`)
 - [ ] F1 (remainder): -RENAME of materials — re-scope first: CADCraft has no material table at
