@@ -1,17 +1,20 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-20 · **Change:** minor (Ribbon contextual block/text/table tabs, Quick Access Toolbar and local Info Bar; previously distinct polyline midpoint grips) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
+> **Last reviewed:** 2026-11-23 · **Last updated:** 2026-11-23 · **Change:** moderate (re-audited precision input against actual source: TK/TT, typed snap overrides, PolarSnap, polar angles relative to the last segment, Extension on ellipse/spline ends and grip dimensional input were all already landed — this doc, not the code, was stale; `'CAL` genuinely was missing its one real gap, now fixed) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
 
 How CADCraft's interaction compares with AutoCAD's: point entry, object snaps, tracking, dynamic
 input, grips, selection, the command line, chrome and navigation. A drafter's speed in AutoCAD
 comes from these, so "the command exists" isn't enough: it has to accept the same input, snap to
 the same points and respond to the same keys. Work items: [gaps.md](gaps.md#uiux).
 
-**Headline (estimated): UI/UX fidelity ≈ 48%.** The command line, point syntax, the common
-running snaps, polar/ortho, object snap tracking and the palettes are real, and so are the
-Extension, Parallel and Apparent Intersection snaps (#379); dynamic input is a read-only
-tooltip; FROM, M2P, TK and point filters don't exist; hot-grip options are advertised but
-ignored; there are no context menus. Remaining: **≈ 110–170 Opus 5.5 hours**.
+**Headline (estimated): UI/UX fidelity ≈ 48%, prose corrected 2026-11-23, percentage not yet
+re-run.** The command line, point syntax, the common running snaps, polar/ortho, object snap
+tracking, FROM/M2P/TK, typed snap overrides, PolarSnap, dimensional input on grips, the typed
+calculator `'CAL` and the palettes are real, and so are the Extension, Parallel and Apparent
+Intersection snaps (#379) — several of these were marked missing in earlier passes of this doc;
+they were not. Still missing: a down-arrow options menu on the dynamic-input prompt (DYNPROMPT),
+DYNDIM, the AutoSnap magnet and aperture box, and 3D-only items (OSNAPZ). Remaining: **≈ 110–170
+Opus 5.5 hours (stale estimate, due a re-run)**.
 
 ## How this was measured
 
@@ -49,11 +52,11 @@ ignored; there are no context menus. Remaining: **≈ 110–170 Opus 5.5 hours**
 | Architectural/engineering distances `5'6-1/2"` | yes | yes | `units.rs:93-140` |
 | `FROM` (base point + offset) | yes | yes: "Base point:", "<Offset>:" with `@` measured from the base; nests with M2P and filters | `pointmod.rs` |
 | `M2P` / `MTP` (midpoint between two points) | yes | yes | `pointmod.rs` |
-| `TK` (tracking) | yes | **no** | |
+| `TK` (tracking) | yes | yes (`pointmod::Frame::Track`) — stale row, re-checked 2026-11-23 | |
 | Point filters `.x`, `.y`, `.xy`, `.z` | yes | yes (`.x` … `.yz`, "(need YZ):"); Z is asked for and dropped (no 3D) | `pointmod.rs` |
 | Angle override `<45` | yes | yes: `<a`, `<<a`, `<<<a`; a typed distance or a pick follows the angle, typed coordinates win | `pointmod.rs` |
 | Object snap overrides (`END`, `MID`, `INT` … `NON`) | yes | yes, every mode and `NON`, with long names and `_`/`'` prefixes, for the next pick only; a typed point is snapped within the aperture; a command's own keyword wins (`_cen` always snaps); also from the snap menu | `pointmod.rs` |
-| Typed calculator `'CAL` | yes | no | |
+| Typed calculator `'CAL` | yes | yes: a fully transparent command (suspends the running command, `>> Expression:`), and its result now answers the prompt it interrupted (point or number), fixed 2026-11-23 (`43d5291b`) — stale row, was previously echo-only | |
 
 ## Object snaps (≈ 45%)
 
@@ -73,7 +76,7 @@ ignored; there are no context menus. Remaining: **≈ 110–170 Opus 5.5 hours**
 | Nearest | every curve | yes |
 | Apparent intersection | projected intersection | yes in 2D: where objects near the cursor would meet if extended; an object rested on sends its whole extension, so its crossing with another object snaps too (`snap.rs` `osnap_with`, `snap/tracking.rs`) |
 | Parallel | yes, with parallel path | yes: rest on a line, then a path parallel to it runs through the base point (`snap/tracking.rs`) |
-| Temporary overrides typed at a prompt (`END`, `MID`, `INT` …) | yes | **no**: the text arrives as plain input |
+| Temporary overrides typed at a prompt (`END`, `MID`, `INT` …) | yes | yes (#393) — stale row, re-checked 2026-11-23 |
 | Shift/Ctrl+right-click snap menu | yes | yes: From, Mid Between 2 Points, Point Filters, the snap modes, None, Osnap Settings; no Temporary track point yet (`context_menu.rs`) |
 | Tab to cycle candidate snaps | yes | yes, through the closest snap of each running mode under the cursor (`pointmod::snap_candidates`) |
 | AutoSnap marker, tooltip, magnet, aperture box | yes | marker per mode and name label; aperture from APERTURE; no magnet, no aperture box |
@@ -85,8 +88,8 @@ ignored; there are no context menus. Remaining: **≈ 110–170 Opus 5.5 hours**
 |---|---|---|
 | Ortho (F8) | yes, Shift overrides it while held | yes; holding Shift turns it on or off while held (`Session::snap_cursor`, `snap/tracking.rs`) |
 | Polar tracking increment | yes | yes, measured from ANGBASE; dotted path and "Polar: d < a°" tooltip (`snap/tracking.rs`, `canvas.rs` `draw_tracking`) |
-| Additional polar angles, relative to last segment | yes | additional angles yes (POLARADDANG with POLARMODE 4); **relative to the last segment no** |
-| Polar distance snap (PolarSnap) | yes | **no** |
+| Additional polar angles, relative to last segment | yes | yes, both (#441) — stale row, re-checked 2026-11-23 |
+| Polar distance snap (PolarSnap) | yes | yes (#441) — stale row, re-checked 2026-11-23 |
 | **Object snap tracking** (acquire points, alignment paths, intersections of paths) | yes, F11 | yes (#379): resting on a snap point acquires it (`+`), resting again releases it, seven at most; horizontal/vertical paths, or every polar angle with POLARMODE 2; Shift to acquire with POLARMODE 8; crossings of two paths, a path and an object, and a path and a polar path snap; tooltip names each path; a typed distance (direct distance entry) runs along the path the cursor is on, measured from the point the path comes from. Engine: `Session::snap_cursor`, `snap/tracking.rs`; AUTOSNAP bits 8 and 16 |
 | Grid (rectangular, major lines, adaptive, limits) | yes | rectangular and isometric (30°, 90° and 150° lines), major lines, adaptive display |
 | Snap (rectangular, isometric, polar snap) | yes | rectangular and isometric (SNAPSTYL 1: the snap Y spacing along the isometric axes), from SNAPBASE turned by SNAPANG |
@@ -103,9 +106,10 @@ CADCraft has pointer input boxes since #60 (`crates/ui-egui/src/dyninput.rs`): v
 beside the cursor while a command asks for a point; second and later points default to polar
 distance and angle (DYNPIFORMAT = 1 for Cartesian); `,` and `<` lock a value and move to the next
 box; Tab types the separator; Enter sends a relative entry (DYNPICOORDS = 1 for absolute) and
-fills an empty box from the cursor; a plain number stays direct distance entry. Missing:
-dimensional input on grips (length/angle fields while stretching), lock icons, the prompt with a
-down-arrow options menu (DYNPROMPT), and DYNDIM.
+fills an empty box from the cursor; a plain number stays direct distance entry. Dimensional
+input on grips (length/angle fields while stretching, locking the same way) landed too
+(`grip_dyn.rs`) — stale paragraph, re-checked 2026-11-23. Still missing: a down-arrow options
+menu on the prompt (DYNPROMPT) and DYNDIM.
 
 ## Grips (≈ 40%)
 
