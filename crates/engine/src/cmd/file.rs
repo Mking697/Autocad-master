@@ -181,6 +181,13 @@ pub fn specs() -> Vec<CommandSpec> {
             .key("Cmd+Shift+S")
             .params("{path, version?: 2000|2004|2007|2010|2013|2018, binary?: bool}")
             .noundo(),
+        // Typed at the command line: asks for format, version and name as plain text instead of
+        // opening the native Save dialog (the menu item and bare "saveas" do that), matching
+        // AutoCAD's classic dash-prefixed command-line commands (-LAYER, -XREF, -PLOT…).
+        CommandSpec::new("-saveas", "Save As... (command line)", run_saveas_reporting)
+            .params("{path, version?: 2000|2004|2007|2010|2013|2018, binary?: bool}")
+            .noundo()
+            .interactive(|_| Ok(Box::new(DashSaveAsM::default()))),
         CommandSpec::new("document.switch", "Switch Drawing", run_switch).params("{index}").enabled(always).noundo(),
         CommandSpec::new("document.bytes", "Drawing as bytes", run_bytes)
             .params("{format?: dxf, version?: 2000…2018, binary?: bool} → {data: base64}")
@@ -239,6 +246,94 @@ impl Interactive for ScriptM {
             return Ok(Step::Cancel);
         }
         match run_script(s, &json!({ "path": t })) {
+            Ok(_) => Ok(Step::Done),
+            Err(EngineError::BadParams { msg, .. }) => {
+                s.echo(msg);
+                Ok(Step::Done)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// -SAVEAS typed at the command line: asks for the format, version and file name as plain text,
+/// instead of opening the native Save dialog ("saveas"/"ui.saveas" do that; `run_saveas_reporting`
+/// serves the JSON form for both commands identically).
+#[derive(Default)]
+struct DashSaveAsM {
+    dxf: Option<bool>,
+    version: Option<Version>,
+    binary: Option<bool>,
+}
+
+impl Interactive for DashSaveAsM {
+    fn name(&self) -> &'static str {
+        "SAVEAS"
+    }
+    fn prompt(&self, _: &Session) -> Prompt {
+        if self.dxf.is_none() {
+            return Prompt::new("Enter file format", Accept::TEXT).kw(&["Dwg", "Dxf"]).default("Dwg");
+        }
+        if self.version.is_none() {
+            return Prompt::new("Enter file version", Accept::TEXT).kw(&["2000", "2004", "2007", "2010", "2013", "2018"]).default("2018");
+        }
+        if self.dxf == Some(true) && self.binary.is_none() {
+            return Prompt::new("Save as binary DXF", Accept::TEXT).kw(&["Yes", "No"]).default("No");
+        }
+        Prompt::new("Enter file name", Accept::TEXT)
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        if matches!(i, Input::Cancel) {
+            return Ok(Step::Cancel);
+        }
+        if self.dxf.is_none() {
+            self.dxf = Some(match &i {
+                Input::Enter => false,
+                Input::Keyword(k) | Input::Text(k) if k.trim().eq_ignore_ascii_case("dxf") => true,
+                Input::Keyword(k) | Input::Text(k) if k.trim().eq_ignore_ascii_case("dwg") => false,
+                _ => {
+                    s.echo("Enter Dwg or Dxf.");
+                    return Ok(Step::Continue);
+                }
+            });
+            return Ok(Step::Continue);
+        }
+        if self.version.is_none() {
+            self.version = Some(match &i {
+                Input::Enter => Version::default(),
+                Input::Keyword(k) | Input::Text(k) => match Version::parse(k.trim()) {
+                    Some(v) => v,
+                    None => {
+                        s.echo(format!("Unknown version (use {}).", version_list()));
+                        return Ok(Step::Continue);
+                    }
+                },
+                _ => return Ok(Step::Continue),
+            });
+            return Ok(Step::Continue);
+        }
+        if self.dxf == Some(true) && self.binary.is_none() {
+            self.binary = Some(match &i {
+                Input::Enter => false,
+                Input::Keyword(k) | Input::Text(k) if k.trim().eq_ignore_ascii_case("yes") => true,
+                Input::Keyword(k) | Input::Text(k) if k.trim().eq_ignore_ascii_case("no") => false,
+                _ => {
+                    s.echo("Enter Yes or No.");
+                    return Ok(Step::Continue);
+                }
+            });
+            return Ok(Step::Continue);
+        }
+        let Input::Text(name) = i else { return Ok(Step::Cancel) };
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(Step::Cancel);
+        }
+        let ext = if self.dxf == Some(true) { "dxf" } else { "dwg" };
+        let path = if std::path::Path::new(name).extension().is_some() { name.to_string() } else { format!("{name}.{ext}") };
+        let binary = self.binary.unwrap_or(false);
+        let version = self.version.unwrap_or_default();
+        match run_saveas_reporting(s, &json!({ "path": path, "version": version.year(), "binary": binary })) {
             Ok(_) => Ok(Step::Done),
             Err(EngineError::BadParams { msg, .. }) => {
                 s.echo(msg);
