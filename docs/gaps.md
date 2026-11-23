@@ -39,8 +39,9 @@ a phase is fine.
       (stale row). Still open: right-click per-context customization, AutoSnap magnet/tooltip
       toggles, drawing-area element colours, named profile import/export
 - [ ] F4: autosave files as DXF not DWG; no separate RECOVER mode in the file readers
-- [ ] FF3: no R14 DWG / R12 DXF output; Save dialog can't pick version per file; no command-line
-      SAVEAS format prompt
+- [x] FF3 (part): command-line SAVEAS format prompt (-SAVEAS) — landed `3542d622`. Still open: no
+      R14 DWG / R12 DXF output; the native OS Save dialog can't pick a version per file (rfd
+      doesn't report which filter the user picked; a custom in-app dialog would be needed)
 - [x] FF4: Johab/DOS code pages on save — already worked (stale row; proved with a test, `e515d885`)
 - [x] U10: next SETVAR batch — 16 more variables landed 2026-11-21 (`c537966a`), 167→183 of
       ~1,000. Most of what's left is genuinely 3D-only (F24), so this item is low-priority to
@@ -155,7 +156,7 @@ Detail: [file-format-parity.md](file-format-parity.md).
 |---|---|---|---|
 | FF1 | **[alpha blocker]** Round-trip what we don't model. DXF done (#528): unknown entities and objects (with their CLASS records), foreign xdata (hyperlinks included), extension dictionaries, persistent reactors, DICTIONARYVAR and XRECORDs, layer states, colour book colours, references remapped on save; IMAGE, VIEW/UCS, groups, block descriptions, true colours, transparency (#201, #204, #208, #209, #213, #223); WIPEOUT and gradients (#147, #162). Left: through DWG, acadrust drops custom-class entities and objects, xdata on table records and blocks, entity colour book names and reactors; UCS elevation; MTEXT background colours; unknown entities follow only layer edits, and renamed layers and blocks lose their foreign data | High | 6–10 |
 | FF2 | Multileader leftovers (native MULTILEADER read/write landed, #459): several landings per multileader (extra leader roots are folded into the lines), per-object overrides (leader colour and linetype, arrowhead symbol, text frame), annotative scale contexts; check the text placement of our MULTILEADER output in AutoCAD | Medium | 3–5 |
-| FF3 | Save-version leftovers (DXF/DWG 2000–2018, binary DXF, SAVEAS `version`/`binary` and the default save version landed, #421): no R14 DWG or R12 DXF output; the Save dialog can't pick the version per file (the file picker doesn't report the chosen type; File > Default Save Format sets it); no command-line SAVEAS format prompt | Low | 2–4 |
+| FF3 | Save-version leftovers (DXF/DWG 2000–2018, binary DXF, SAVEAS `version`/`binary`, the default save version, and now the command-line `-SAVEAS` format/version/binary prompt all landed, #421, `3542d622`): no R14 DWG or R12 DXF output; the native Save dialog can't pick the version per file (rfd, the OS file-picker crate, doesn't report which filter the user picked; File > Default Save Format sets the version for untitled drawings instead) | Low | 1–3 |
 | FF4 | Code-page leftovers (pre-2007 DXF read and write their `$DWGCODEPAGE` landed, #505 and 2026-11-21: Johab/DOS 437/850/852/855/857/860–865/869 already decode correctly on read, and keep their declared page on save instead of downgrading to ANSI_1252, confirmed by `johab_and_dos_code_pages_are_also_kept_before_2007`); left: acadrust (our DWG dependency) approximates these same DOS code pages in pre-2007 **DWG** specifically (DOS437 as 866, DOS850 as 1252) — a third-party library limitation, not CADCraft's own DXF code | Low | 0–1 |
 | FF5 | **[alpha blocker]** Real-file corpus (`storytold/cadcraft-corpus`), open → save → reopen tests, black-box check in AutoCAD | High | 10–15 + human |
 | FF6 | **[alpha blocker]** DWG throughput: a 10 MB DWG took ~2 min to fail (#57) | High for real projects | 6–10 |
