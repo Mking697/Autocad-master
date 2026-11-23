@@ -114,7 +114,15 @@ impl Interactive for CalM {
             return Ok(Step::Done);
         }
         match calc::eval_val(&t, &serde_json::Map::new()) {
-            Ok(v) => s.echo(v.text()),
+            Ok(v) => {
+                s.echo(v.text());
+                // Hands the value to the command `'CAL` interrupted, as its answer (AutoCAD:
+                // a point expression answers a point prompt, a number answers a number one).
+                s.transparent_result = Some(match v {
+                    calc::Val::Pt(p) => Input::Point(p),
+                    calc::Val::Num(n) => Input::Text(calc::num_text(n)),
+                });
+            }
             Err(m) => s.echo(format!("CAL: {m}")),
         }
         Ok(Step::Done)

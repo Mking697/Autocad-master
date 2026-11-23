@@ -2,6 +2,7 @@
 //! conversion, values picked from the drawing (#563).
 
 use cadcraft_engine::Session;
+use cadcraft_engine::doc::EntityKind;
 use serde_json::json;
 
 #[test]
@@ -76,6 +77,55 @@ fn cal_and_picks_at_the_command_line() {
         s.cmdline(t).unwrap();
     }
     assert_eq!(s.log.last().map(String::as_str), Some("QuickCalc: 2,2"));
+    assert!(s.running.is_none());
+}
+
+#[test]
+fn transparent_cal_answers_the_point_prompt_it_interrupted() {
+    // `'CAL` at LINE's "Specify first point" hands LINE the evaluated point as its answer
+    // (AutoCAD's transparent-command behaviour), instead of only echoing the value.
+    let mut s = Session::new();
+    s.start("line").unwrap();
+    s.cmdline("'cal").unwrap();
+    assert_eq!(s.running.as_ref().map(|r| r.id.as_str()), Some("cal"), "CAL suspends LINE and runs");
+    s.cmdline("[3,4]").unwrap();
+    assert_eq!(s.running.as_ref().map(|r| r.id.as_str()), Some("line"), "LINE resumes with CAL's point");
+    s.cmdline("10,0").unwrap();
+    s.cmdline("").unwrap();
+    assert!(s.running.is_none());
+    let d = s.doc().unwrap();
+    assert_eq!(d.model.len(), 1, "a line from (3,4) to (10,0) was drawn, not just echoed");
+}
+
+#[test]
+fn transparent_cal_answers_a_number_prompt_as_text() {
+    // At CIRCLE's "Specify radius", a plain-number CAL expression becomes typed text, the way
+    // a command's own number parsing already expects (there is no `Input::Number`).
+    let mut s = Session::new();
+    s.start("circle").unwrap();
+    s.cmdline("0,0").unwrap();
+    s.cmdline("'cal").unwrap();
+    s.cmdline("2+3").unwrap();
+    assert!(s.running.is_none(), "CIRCLE took the radius and finished");
+    let d = s.doc().unwrap();
+    let EntityKind::Circle(c) = &d.model.iter().next().unwrap().kind else { panic!("not a circle") };
+    assert_eq!(c.radius, 5.0);
+}
+
+#[test]
+fn transparent_cal_feeds_nothing_back_on_a_bad_expression_or_cancel() {
+    // An invalid expression, or an empty Enter, leaves the interrupted command exactly where
+    // it was: no point is consumed, nothing crashes.
+    let mut s = Session::new();
+    s.start("line").unwrap();
+    s.cmdline("'cal").unwrap();
+    s.cmdline("1/0").unwrap();
+    assert_eq!(s.running.as_ref().map(|r| r.id.as_str()), Some("line"));
+    assert!(s.current_prompt().unwrap().message.to_ascii_lowercase().contains("first point"), "still waiting for the first point");
+    s.cmdline("'cal").unwrap();
+    s.cmdline("").unwrap();
+    assert_eq!(s.running.as_ref().map(|r| r.id.as_str()), Some("line"));
+    s.cancel();
     assert!(s.running.is_none());
 }
 

@@ -688,6 +688,10 @@ pub struct Session {
     pub ctrl_down: bool,
     /// Origin of the point currently being fed by `input_snapped`; never reused by typed points.
     picked_viewport: Option<snap::ViewportPoint>,
+    /// The value a transparent command (currently only `'CAL`) computed, fed as the answer to
+    /// the command it interrupted once that command resumes (AutoCAD's `'CAL` behaviour: the
+    /// expression's value becomes the point or number the paused prompt was waiting for).
+    pub(crate) transparent_result: Option<Input>,
     /// The last drawing comparison (COMPARE), drawn over the drawing it was made for.
     pub compare: Option<cmd::file::compare::Comparison>,
     /// Object snap tracking: acquired points and the path under the cursor (from the UI's
@@ -751,6 +755,7 @@ impl Session {
             cursor_deferred: None,
             ctrl_down: false,
             picked_viewport: None,
+            transparent_result: None,
             compare: None,
             tracking: snap::tracking::Tracker::default(),
             viewport_px: (1200.0, 800.0),
@@ -1304,6 +1309,9 @@ impl Session {
             Ok(Step::Done) => {
                 self.finish(run, false);
                 self.resume_suspended();
+                if let Some(i) = self.transparent_result.take() {
+                    return self.input(i);
+                }
                 Ok(())
             }
             Ok(Step::Cancel) => {
