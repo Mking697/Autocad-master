@@ -43,18 +43,24 @@ pub(crate) fn of_selection(app: &mut CadApp) -> Arc<Vec<(Handle, DynGrip)>> {
     app.canvas.dyn_grips.grips.clone()
 }
 
+/// The screen outline of an arrow grip at world point `at`, pointing world direction `dir`
+/// (size `gs`, half the side of a square grip). Shared with array count grips
+/// ([`crate::arraygrips`]), which use the same shape.
+pub(crate) fn arrow_outline(xf: &Xf, at: cadcraft_engine::geom::Vec2, dir: cadcraft_engine::geom::Vec2, gs: f32) -> Vec<Pos2> {
+    let c = xf.to_screen(at);
+    // The arrow points the way the distance grows, on screen.
+    let ahead = xf.to_screen(at + dir) - c;
+    let u = if ahead.length() > 1e-6 { ahead / ahead.length() } else { vec2(1.0, 0.0) };
+    let n = vec2(-u.y, u.x);
+    let (len, half) = (gs * 1.6, gs * 1.1);
+    vec![c - u * (len * 0.5) + n * half, c + u * (len * 0.8), c - u * (len * 0.5) - n * half]
+}
+
 /// The screen outline of grip `g` (size `gs`, half the side of a square grip).
 fn outline(xf: &Xf, g: &DynGrip, gs: f32) -> Vec<Pos2> {
     let c = xf.to_screen(g.at);
     match g.shape {
-        GripShape::Linear => {
-            // The arrow points the way the distance grows, on screen.
-            let ahead = xf.to_screen(g.at + g.dir) - c;
-            let u = if ahead.length() > 1e-6 { ahead / ahead.length() } else { vec2(1.0, 0.0) };
-            let n = vec2(-u.y, u.x);
-            let (len, half) = (gs * 1.6, gs * 1.1);
-            vec![c - u * (len * 0.5) + n * half, c + u * (len * 0.8), c - u * (len * 0.5) - n * half]
-        }
+        GripShape::Linear => arrow_outline(xf, g.at, g.dir, gs),
         GripShape::Point => {
             vec![c + vec2(-gs, -gs), c + vec2(gs, -gs), c + vec2(gs, gs), c + vec2(-gs, gs)]
         }
