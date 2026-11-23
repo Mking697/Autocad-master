@@ -26,6 +26,119 @@ fn with_block() -> Session {
 }
 
 #[test]
+fn style_block_defaults_apply_to_json_and_interactive_creation() {
+    let mut s = with_block();
+    s.execute("mleaderstyle", &json!({"name": "Symbols", "block": "tag", "blockScale": 2, "blockCenter": false, "current": false})).unwrap();
+    s.execute("setvar", &json!({"name": "CMLEADERSTYLE", "value": "Symbols"})).unwrap();
+    let listed = s.execute("mleaderstyle", &json!({})).unwrap();
+    let style = listed["styles"].as_array().unwrap().iter().find(|v| v["name"] == "Symbols").unwrap();
+    assert_eq!(style["block"], "TAG");
+    assert_eq!(style["blockScale"], 2.0);
+    assert_eq!(style["blockCenter"], false);
+    s.execute("mleader", &json!({"points": [[0, 0], [10, 5]]})).unwrap();
+    let m = last_mleader(&s);
+    let b = m.block.unwrap();
+    assert_eq!(b.block, "TAG");
+    assert_eq!(b.scale.x, 2.0);
+    assert!(b.insert.xy().near(m.landing.xy() + Vec2::new(m.dogleg, 0.0), 1e-9));
+    s.script("mleader 20,0 30,5\n").unwrap();
+    assert!(s.running.is_none(), "{}", s.prompt_text());
+    assert_eq!(last_mleader(&s).block.unwrap().scale.x, 2.0);
+    // Clearing the style content restores text for both entry points, even after a block command.
+    s.execute("mleaderstyle", &json!({"name": "Symbols", "block": null})).unwrap();
+    s.execute("mleader", &json!({"points": [[0, 0], [10, 5]], "text": "Text"})).unwrap();
+    assert!(last_mleader(&s).block.is_none());
+    s.script("mleader 20,0 30,5 Text\n").unwrap();
+    assert!(s.running.is_none());
+    assert!(last_mleader(&s).block.is_none());
+}
+
+#[test]
+fn style_attributes_are_instantiated_and_survive_dxf() {
+    let mut s = Session::new();
+    let h = s.execute("attdef", &json!({"tag": "NUM", "default": "?", "at": [2, 3], "height": 0.5, "lockPosition": true})).unwrap()["handle"].clone();
+    s.execute("block", &json!({"name": "LABEL", "base": [1, 1], "handles": [h], "keep": "delete"})).unwrap();
+    s.execute("mleaderstyle", &json!({"name": "Labels", "block": "LABEL", "blockScale": 2, "blockCenter": false, "blockAttribs": {"num": "007"}}))
+        .unwrap();
+    let listed = s.execute("mleaderstyle", &json!({})).unwrap();
+    let style = listed["styles"].as_array().unwrap().iter().find(|v| v["name"] == "Labels").unwrap();
+    assert_eq!(style["blockAttribs"]["NUM"], "007");
+    s.execute("mleader", &json!({"points": [[0, 0], [10, 5]]})).unwrap();
+    let b = last_mleader(&s).block.unwrap();
+    assert_eq!(b.attribs.len(), 1);
+    assert_eq!(b.attribs[0].text.value, "007");
+    assert!(b.attribs[0].modes.lock_position);
+    assert!(b.attribs[0].text.insert.xy().near(b.insert.xy() + Vec2::new(2.0, 4.0), 1e-9));
+    s.execute("mleader", &json!({"points": [[0, 0], [10, 5]], "attribs": {"num": "X\\U+0041 Ω"}, "blockScale": 3})).unwrap();
+    let b = last_mleader(&s).block.unwrap();
+    assert_eq!(b.scale.x, 3.0);
+    assert_eq!(b.attribs[0].text.value, "X\\U+0041 Ω");
+    s.script("mleader 20,0 30,5\n").unwrap();
+    assert!(s.running.is_none());
+    assert_eq!(last_mleader(&s).block.unwrap().attribs[0].text.value, "007");
+    let h = s.doc().unwrap().model.last().unwrap().handle;
+    let before = last_mleader(&s).block.unwrap().attribs[0].text.insert;
+    let reference = s.execute("mleader", &json!({"points": [[0, 0], [10, 50]]})).unwrap()["handle"].clone();
+    s.execute("mleaderalign", &json!({"handles": [h.hex()], "to": reference, "angle": 0})).unwrap();
+    let EntityKind::MLeader(aligned) = &s.doc().unwrap().entity(h).unwrap().kind else { panic!("multileader") };
+    let moved = &aligned.block.as_ref().unwrap().attribs[0].text.insert;
+    assert!((moved.y - before.y - 45.0).abs() < 1e-9, "attributes move with aligned content");
+    let bytes = cadcraft_io::write(s.doc().unwrap(), "x.dxf").unwrap();
+    let back = cadcraft_io::read(&bytes, "x.dxf").unwrap();
+    let st = back.mleader_styles.iter().find(|s| s.name == "Labels").unwrap();
+    assert_eq!(serde_json::to_value(st).unwrap()["blockAttribs"]["NUM"], "007");
+    let mut reopened = Session::new();
+    *reopened.doc_mut().unwrap() = back;
+    reopened.execute("mleader", &json!({"points": [[0, 0], [10, 5]]})).unwrap();
+    assert_eq!(last_mleader(&reopened).block.unwrap().attribs[0].text.value, "007");
+}
+
+#[test]
+fn style_block_references_follow_purge_and_rename_before_any_leader_exists() {
+    let mut s = with_block();
+    s.execute("mleaderstyle", &json!({"name": "Symbols", "block": "TAG"})).unwrap();
+    s.execute("purge", &json!({"type": "blocks"})).unwrap();
+    assert!(s.doc().unwrap().block("TAG").is_some());
+    s.execute("rename", &json!({"table": "block", "from": "TAG", "to": "NOTE"})).unwrap();
+    let style = s.execute("mleaderstyle", &json!({})).unwrap();
+    let st = style["styles"].as_array().unwrap().iter().find(|v| v["name"] == "Symbols").unwrap();
+    assert_eq!(st["block"], "NOTE");
+    s.execute("mleader", &json!({"points": [[0, 0], [10, 5]]})).unwrap();
+    assert_eq!(last_mleader(&s).block.unwrap().block, "NOTE");
+}
+
+#[test]
+fn style_block_inputs_reject_without_guard_panics_or_partial_mutations() {
+    let mut s = with_block();
+    s.execute("mleaderstyle", &json!({"name": "Symbols", "block": "TAG"})).unwrap();
+    let too_many: serde_json::Map<String, serde_json::Value> = (0..1025).map(|i| (format!("T{i}"), json!("v"))).collect();
+    let before = s.execute("mleaderstyle", &json!({})).unwrap();
+    for p in [
+        json!({"name": "Bad", "block": "missing", "arrowSize": 99}),
+        json!({"name": "Bad", "block": ""}),
+        json!({"name": "Symbols", "blockScale": -1, "arrowSize": 99}),
+        json!({"name": "Symbols", "blockScale": 1e300}),
+        json!({"name": "Symbols", "blockCenter": "maybe"}),
+        json!({"name": "Symbols", "blockAttribs": too_many}),
+        json!({"name": "Symbols", "blockAttribs": {"T": ["wrong"]}}),
+    ] {
+        let e = s.execute("mleaderstyle", &p).unwrap_err();
+        assert!(!matches!(e, cadcraft_engine::EngineError::Internal(..)), "{e}");
+        assert_eq!(s.execute("mleaderstyle", &json!({})).unwrap(), before);
+    }
+    let n = s.doc().unwrap().model.len();
+    for p in [
+        json!({"points": [[0, 0], [10, 5]], "block": "missing"}),
+        json!({"points": [[0, 0], [10, 5]], "blockScale": 0}),
+        json!({"points": [[0, 0], [10, 5]], "attribs": too_many}),
+    ] {
+        let e = s.execute("mleader", &p).unwrap_err();
+        assert!(!matches!(e, cadcraft_engine::EngineError::Internal(..)), "{e}");
+        assert_eq!(s.doc().unwrap().model.len(), n);
+    }
+}
+
+#[test]
 fn spline_leader_curves_through_its_points() {
     let mut s = Session::new();
     s.script("mleader o l p m 3 x 0,0 5,5 10,0 note\n").unwrap();

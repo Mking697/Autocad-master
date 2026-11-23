@@ -196,11 +196,9 @@ pub(crate) fn validate_plot_offset_json(v: &Value) -> Result<()> {
 
 /// `[l, b, r, t]` margins in mm (finite, 0–1000), else `None`.
 pub(crate) fn margins(v: Option<&Value>) -> Option<[f64; 4]> {
-    let a: Vec<f64> = v?.as_array()?.iter().take(5).filter_map(Value::as_f64).collect();
-    match a[..] {
-        [l, b, r, t] if a.iter().all(|x| x.is_finite() && (0.0..=1000.0).contains(x)) => Some([l, b, r, t]),
-        _ => None,
-    }
+    let [l, b, r, t] = v?.as_array()?.as_slice() else { return None };
+    let margins = [l.as_f64()?, b.as_f64()?, r.as_f64()?, t.as_f64()?];
+    margins.iter().all(|x| x.is_finite() && (0.0..=1000.0).contains(x)).then_some(margins)
 }
 
 /// A plot window from `[[x1, y1], [x2, y2]]`: finite corners and a positive size, else `None`.

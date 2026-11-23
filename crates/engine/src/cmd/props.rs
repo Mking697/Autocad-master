@@ -69,7 +69,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("mleaderstyle", "Multileader Style...", run_mleaderstyle)
             .menu(&["Format", "Multileader Style..."])
             .alias(&["mls"])
-            .params("{name, arrowSize?, textHeight?, landingGap?, dogleg?, textStyle?, annotative?, current?} → styles"),
+            .params("{name, arrowSize?, textHeight?, landingGap?, dogleg?, textStyle?, annotative?, block?: name|null (MText), blockScale?: positive number, blockCenter?: bool, blockAttribs?: {TAG: string}, current?} → styles"),
         CommandSpec::new("ddptype", "Point Style...", run_ptype)
             .menu(&["Format", "Point Style..."])
             .alias(&["ptype"])
@@ -1063,6 +1063,9 @@ fn run_tablestyle(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn run_mleaderstyle(s: &mut Session, p: &Value) -> Result<Value> {
+    let (block, block_scale, block_center) = super::mleader_content::style_block_fields(s, p)?;
+    let block_attribs =
+        if p.get("blockAttribs").is_some() { Some(super::mleader_content::attribute_values(p, "blockAttribs", "mleaderstyle")?) } else { None };
     let d = s.doc_mut()?;
     if let Some(name) = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
         let idx = match d.mleader_styles.iter().position(|t| t.name.eq_ignore_ascii_case(name)) {
@@ -1091,6 +1094,21 @@ fn run_mleaderstyle(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(a) = p.get("annotative").and_then(Value::as_bool) {
                 st.annotative = a;
+            }
+            if let Some(b) = block {
+                if st.block != b {
+                    st.block_attribs.clear();
+                }
+                st.block = b;
+            }
+            if let Some(values) = block_attribs {
+                st.block_attribs = values;
+            }
+            if let Some(v) = block_scale {
+                st.block_scale = v;
+            }
+            if let Some(v) = block_center {
+                st.block_center = v;
             }
         }
         if bool_or(p, "current", true) {

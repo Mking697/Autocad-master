@@ -275,7 +275,12 @@ fn shift_content(m: &mut MLeader, d: Vec2) {
         mv(&mut t.insert);
     }
     if let Some(b) = &mut m.block {
-        mv(&mut b.insert);
+        // Attribute text is stored in world coordinates alongside the insertion point.
+        let mut k = EntityKind::Insert(b.clone());
+        k.transform(&cadcraft_geom::Mat3::translate(d));
+        if let EntityKind::Insert(moved) = k {
+            *b = moved;
+        }
     }
 }
 

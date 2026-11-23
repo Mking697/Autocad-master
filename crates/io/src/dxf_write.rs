@@ -1987,6 +1987,9 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
     if let Some(name) = d.header.get("CMLEADERSTYLE").and_then(HVal::as_str) {
         xrecords.push((dxf_ext::MLEADER_STYLE_KEY, w.h(), vec![name.to_string()]));
     }
+    if let Some(chunks) = crate::dxf_mleader_style::chunks(&d.mleader_styles) {
+        xrecords.push((crate::dxf_mleader_style::KEY, w.h(), chunks));
+    }
     if let Some(chunks) = dxf_ext::constraint_chunks(&d.constraints, &d.parametric) {
         xrecords.push((dxf_ext::CONSTRAINTS_KEY, w.h(), chunks));
     }
@@ -2510,7 +2513,8 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
     }
     let byblock_ltype = ltype_handles.get("BYBLOCK").cloned();
     for (s, h) in mleader_styles.iter().zip(&mleader_handles) {
-        mleader_style_obj(&mut w, s, h, &mleader_dict, byblock_ltype.as_deref(), cx.style(&s.text_style));
+        let block = s.block.as_ref().and_then(|n| cx.block_records.get(&n.to_ascii_uppercase()));
+        mleader_style_obj(&mut w, s, h, &mleader_dict, byblock_ltype.as_deref(), cx.style(&s.text_style), block);
     }
     // Multiline styles.
     w.t.extend(crate::dxf_mline::objects(&cx.mlines, &root_dict));
@@ -2682,9 +2686,22 @@ fn tags_for(d: &Drawing, version: Version, target: Version) -> Vec<Tag> {
         w.p(17, Vec3::new(0.0, 1.0, 0.0));
         w.i(76, 0);
         w.s(330, brh);
-        // The saved paper-space view (centre, height) as CADCraft xdata.
-        if let Some((c, height)) = view.filter(|(c, v)| c.x.is_finite() && c.y.is_finite() && v.is_finite()) {
+        // The public DXF Reference's PLOTSETTINGS groups (including group 70) do not
+        // specify plot transparency. This is CADCraft's own boolean, not a standard flag:
+        // CADCRAFT / PLOTTRANSPARENCY { 1070 1 }; absence means false.
+        // Share one application run with PSVIEW so both survive the DXF/DWG xdata bridge.
+        let view = view.filter(|(c, v)| c.x.is_finite() && c.y.is_finite() && v.is_finite());
+        if page.plot_transparency || view.is_some() {
             w.s(1001, dxf_ext::APP);
+        }
+        if page.plot_transparency {
+            w.s(1000, "PLOTTRANSPARENCY");
+            w.s(1002, "{");
+            w.i(1070, 1);
+            w.s(1002, "}");
+        }
+        // The saved paper-space view (centre, height) as CADCraft xdata.
+        if let Some((c, height)) = view {
             w.s(1000, "PSVIEW");
             w.s(1002, "{");
             w.p(1010, c.to3(0.0));
@@ -2822,10 +2839,17 @@ fn group_obj(w: &mut W, g: &Group, h: &str, dict: &str, written: &std::collectio
     }
 }
 
-/// A MLEADERSTYLE object (DXF Reference, OBJECTS: MLEADERSTYLE): MText content and straight
-/// ByBlock leaders with the style's landing gap, dogleg length, arrow size, text style and
-/// text height.
-fn mleader_style_obj(w: &mut W, s: &MLeaderStyle, h: &str, dict: &str, byblock_ltype: Option<&str>, text_style: Option<String>) {
+/// A native MLEADERSTYLE object, including its default content block (343), scale
+/// (47/49/140), and connection type (177). Attribute defaults are CADCraft metadata.
+fn mleader_style_obj(
+    w: &mut W,
+    s: &MLeaderStyle,
+    h: &str,
+    dict: &str,
+    byblock_ltype: Option<&str>,
+    text_style: Option<String>,
+    block: Option<&String>,
+) {
     // ByBlock as a 32-bit colour value (0xC1000000).
     const BYBLOCK: i64 = -1_056_964_608;
     w.s(0, "MLEADERSTYLE");
@@ -2834,7 +2858,7 @@ fn mleader_style_obj(w: &mut W, s: &MLeaderStyle, h: &str, dict: &str, byblock_l
     w.s(330, dict);
     w.s(100, "AcDbMLeaderStyle");
     w.i(179, 2);
-    w.i(170, 2);
+    w.i(170, if block.is_some() { 1 } else { 2 });
     w.i(171, 1);
     w.i(172, 0);
     w.i(90, 2);
@@ -2865,14 +2889,18 @@ fn mleader_style_obj(w: &mut W, s: &MLeaderStyle, h: &str, dict: &str, byblock_l
     w.i(292, 0);
     w.i(297, 0);
     w.f(46, 4.0);
+    if let Some(b) = block {
+        w.s(343, b);
+    }
     w.i(94, BYBLOCK);
     for c in [47, 49, 140] {
-        w.f(c, 1.0);
+        w.f(c, s.block_scale);
     }
     w.i(293, 1);
     w.f(141, 0.0);
     w.i(294, 1);
-    w.i(177, 0);
+    // ActiveX acBlockConnectionType: acConnectExtents = 0, acConnectBase = 1.
+    w.i(177, i64::from(!s.block_center));
     w.f(142, 1.0);
     w.i(295, 0);
     w.i(296, i64::from(s.annotative));

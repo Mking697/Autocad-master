@@ -71,7 +71,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("mleader", "Multileader", run_mleader)
             .menu(&["Dimension", "Multileader"])
             .alias(&["mld"])
-            .params("{points: [[arrow], ..., [landing]] ([location] with leaderType none), text?, leaderType?: straight|spline|none, block?: name, blockAttach?: center|insertion}")
+            .params("{points: [[arrow], ..., [landing]] ([location] with leaderType none), text?, leaderType?: straight|spline|none, block?: name|null (default: style), blockAttach?: center|insertion, blockScale?: positive number, attribs?: {TAG: string}}")
             .interactive(|s| Ok(Box::new(MLeaderM::new(s)))),
         CommandSpec::new("leader", "Leader", run_leader)
             .alias(&["lead"])
@@ -128,10 +128,14 @@ fn style(s: &Session) -> String {
 }
 
 fn dim(s: &Session, kind: DimKind, defpt: Vec2, p13: Vec2, p14: Vec2, p15: Vec2, text: &str) -> EntityKind {
+    // DIMUPT is a creation option, not a renderer switch: existing manually moved text must
+    // continue to be drawn even when this style option is off. These kinds use defpt as the
+    // placement cursor; two-line angles have a separate arc point, handled below.
+    let user_text_pos = matches!(kind, DimKind::Linear { .. } | DimKind::Aligned | DimKind::Angular3P | DimKind::ArcLength) && manual_text(s);
     EntityKind::Dimension(Dimension {
         kind,
         defpt: v3(defpt),
-        text_mid: Vec3::ZERO,
+        text_mid: if user_text_pos { v3(defpt) } else { Vec3::ZERO },
         p13: v3(p13),
         p14: v3(p14),
         p15: v3(p15),
@@ -140,12 +144,20 @@ fn dim(s: &Session, kind: DimKind, defpt: Vec2, p13: Vec2, p14: Vec2, p15: Vec2,
         style: style(s),
         measurement: 0.0,
         text_rotation: 0.0,
-        user_text_pos: false,
+        user_text_pos,
         block: None,
         overrides: s.doc().map(|d| d.dim_overrides()).unwrap_or_default(),
         assoc: Vec::new(),
         marks: Default::default(),
     })
+}
+
+/// Whether the current style and SETVAR overrides request cursor-positioned creation text.
+fn manual_text(s: &Session) -> bool {
+    s.doc()
+        .ok()
+        .map(|doc| doc.dim_style(&style(s)).cloned().unwrap_or_default().with_overrides(&doc.dim_overrides()).user_positioned_text)
+        .unwrap_or(false)
 }
 
 /// Horizontal (0) or vertical (90°) from where the dimension line is placed (AutoCAD's rule).
@@ -225,6 +237,7 @@ fn angular_from_lines(s: &Session, h1: Handle, h2: Handle, at: Vec2) -> Option<E
             DimAssoc { point: "p15".into(), handle: h2, snap: s2 },
         ];
     }
+    let k = if manual_text(s) { text_at(k, at) } else { k };
     Some(with_assoc(k, assoc))
 }
 
@@ -1813,6 +1826,8 @@ impl MLeaderM {
     fn new(s: &Session) -> Self {
         let o = s.last_used.mleader;
         let max_points = o.max_points.clamp(2, MAX_LEADER_POINTS);
+        let st = super::mleader_content::current_style(s).unwrap_or_default();
+        let style_block = st.block.as_ref();
         MLeaderM {
             order: o.order,
             pts: Vec::new(),
@@ -1822,12 +1837,12 @@ impl MLeaderM {
             max_points,
             angles: o.angles,
             landing: o.landing,
-            content: o.content,
+            content: style_block.is_some() || o.content,
             leader_type: o.leader_type,
-            // Block content needs a block that still exists.
-            block: o.block && s.doc().is_ok_and(|d| d.block(&s.last_used.mleader_block).is_some()),
-            block_name: s.last_used.mleader_block.clone(),
-            block_center: o.block_center,
+            // A style's block default takes precedence over remembered command options.
+            block: style_block.is_some() || (o.block && s.doc().is_ok_and(|d| d.block(&s.last_used.mleader_block).is_some())),
+            block_name: style_block.cloned().unwrap_or_else(|| s.last_used.mleader_block.clone()),
+            block_center: if style_block.is_some() { st.block_center } else { o.block_center },
         }
     }
     /// Keep the order and Options for the next MLEADER.
@@ -1849,6 +1864,8 @@ impl MLeaderM {
         super::mleader_content::Content {
             leader: self.leader_type,
             block: (self.content && self.block).then(|| (self.block_name.clone(), self.block_center)),
+            block_scale: None,
+            attribs: Default::default(),
         }
     }
     /// Leader type None: the one point placed is the content location.

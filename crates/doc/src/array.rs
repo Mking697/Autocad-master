@@ -125,6 +125,20 @@ pub struct ArrayItem {
     pub rotation: f64,
 }
 
+impl PolarArray {
+    /// The angle between consecutive items, degrees (signed like `fill`): `fill / items` for a
+    /// full circle (`fill` is ±360), else `fill / (items - 1)`. The inverse of
+    /// [`ArrayParams::items`]'s step calculation, used by the Angle Between grip (held fixed
+    /// while the Items grip changes the count) and the ARRAYEDIT "Angle between" prompt.
+    pub fn angle_between(&self) -> f64 {
+        if self.items <= 1 {
+            return self.fill;
+        }
+        let full = (self.fill.abs() - 360.0).abs() < 1e-9;
+        if full { self.fill / f64::from(self.items) } else { self.fill / f64::from(self.items - 1) }
+    }
+}
+
 impl ArrayParams {
     /// Items along the first direction (columns or items around) and rows.
     pub fn grid(&self) -> (u32, u32) {

@@ -107,7 +107,10 @@ fn run_recover(s: &mut Session, p: &Value) -> Result<Value> {
         (None, None) => return Err(bad("recover", "`path` or `data` (base64) is required")),
     };
     let hooks = file::io().ok_or_else(|| bad("recover", "file formats are not available in this build"))?;
-    let d = (hooks.read)(&bytes, &name).map_err(|e| bad("recover", format!("{name} can't be read: {e}")))?;
+    let reader = file::recover_reader().unwrap_or(hooks.read);
+    let d = reader(&bytes, &name).map_err(|e| bad("recover", format!("{name} can't be read: {e}")))?;
+    let salvaged = d.read_notes.iter().any(|n| n.starts_with("RECOVER:"));
+    let read_notes = d.read_notes.clone();
     let title = match str_param(p, "title") {
         Some(t) => t.to_string(),
         None => std::path::Path::new(&name).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| name.clone()),
@@ -120,8 +123,8 @@ fn run_recover(s: &mut Session, p: &Value) -> Result<Value> {
         // Nothing to fix: the drawing opens unchanged, like OPEN.
         st.doc = st.saved.clone();
     }
-    if copy && !st.is_dirty() {
-        // An unsaved copy (Drawing Recovery): closing it asks to save it under a name.
+    if (copy || salvaged) && !st.is_dirty() {
+        // A recovered prefix must never silently pass as an unchanged, complete source file.
         st.saved = Arc::new((*st.doc).clone());
     }
     let uid = st.uid;
@@ -129,6 +132,11 @@ fn run_recover(s: &mut Session, p: &Value) -> Result<Value> {
         write_audit_log(s, &report);
     }
     let mut r = report.to_json();
+    if !read_notes.is_empty() {
+        let message = format!("{}\n{}", read_notes.join("\n"), report.message());
+        r["message"] = json!(message);
+        r["readNotes"] = json!(read_notes);
+    }
     r["index"] = json!(i);
     r["uid"] = json!(uid);
     Ok(r)

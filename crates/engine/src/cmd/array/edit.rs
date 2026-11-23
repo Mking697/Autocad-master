@@ -426,14 +426,17 @@ fn apply_params(a: &mut ArrayParams, p: &Value, to_local: &Mat3) -> Result<()> {
     Ok(())
 }
 
-fn fill_angle(f: f64) -> Result<f64> {
+pub(super) fn fill_angle(f: f64) -> Result<f64> {
     if f.abs() < 1e-9 || f.abs() > 360.0 + 1e-9 {
         return Err(other("Requires a fill angle between -360 and 360 degrees (not 0)."));
     }
     Ok(f.clamp(-360.0, 360.0))
 }
 
-fn fill_from_between(b: f64, items: u32) -> Result<f64> {
+/// The fill angle implied by angle-between `b` degrees and `items`: `items` steps of `b` for a
+/// full circle (`b * items` close to ±360), else `items - 1` steps. Used by ARRAYEDIT's "Angle
+/// between" option and JSON `angleBetween` param, and the polar Angle Between grip.
+pub(super) fn fill_from_between(b: f64, items: u32) -> Result<f64> {
     if b.abs() < 1e-9 {
         return Err(other("Requires a nonzero angle."));
     }
@@ -670,16 +673,7 @@ impl Interactive for EditM {
             LevelsTotal => dist("Specify the distance between the first and last level", total(levels, ls)),
             Items => Prompt::new("Enter number of items in array", Accept::NUMBER).default(cols.to_string()),
             Between => {
-                let b = polar.as_ref().map_or(0.0, |k| {
-                    let full = (k.fill.abs() - 360.0).abs() < 1e-9;
-                    if k.items <= 1 {
-                        k.fill
-                    } else if full {
-                        k.fill / f64::from(k.items)
-                    } else {
-                        k.fill / f64::from(k.items - 1)
-                    }
-                });
+                let b = polar.as_ref().map_or(0.0, cadcraft_doc::PolarArray::angle_between);
                 Prompt::new("Specify the angle between items", Accept::NUMBER).default(fmt(b))
             }
             Fill => Prompt::new("Specify the angle to fill (+=ccw, -=cw)", Accept::NUMBER).default(fmt(polar.as_ref().map_or(360.0, |k| k.fill))),

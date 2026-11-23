@@ -65,6 +65,9 @@ fn mb(n: u64) -> String {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+mod mleader_style;
+
+#[cfg(not(target_arch = "wasm32"))]
 mod native {
     use std::io::{Cursor, Write};
     use std::panic::AssertUnwindSafe;
@@ -528,6 +531,7 @@ mod native {
         let mut doc = std::panic::catch_unwind(move || acadrust::DxfReader::from_reader(Cursor::new(data)).and_then(|r| r.read()))
             .map_err(|_| "the DXF→DWG conversion failed".to_string())?
             .map_err(|e| format!("DXF: {e}"))?;
+        crate::mleader_style::restore(&mut doc, dxf);
         match version {
             Some(v) => doc.version = v,
             // Without a version asked for, write at least AutoCAD 2004 (AC1018) DWG: R2000 DWG

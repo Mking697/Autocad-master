@@ -7,7 +7,7 @@ use cadcraft_doc::*;
 use cadcraft_dxf::{Tag, records, sections};
 use cadcraft_geom::{PolyVertex, Spline, Vec2, Vec3};
 
-use crate::{IoError, Result};
+use crate::{IoError, Result, dxf_ext};
 
 pub(crate) mod mtext_dxf;
 
@@ -1833,7 +1833,12 @@ fn read_objects(tags: &[Tag], objs: &mut Objects, layout_objs: &mut Vec<LayoutDe
             // LAYOUT has two 330s: owner dict and the block record; take the last.
             let br = tg.iter().rfind(|x| x.code == 330).map(Tag::str).unwrap_or_default();
             let plot = T(tg.get(..start).unwrap_or(&[]));
-            layout_objs.push((t.s(1).unwrap_or_default(), t.i(71).unwrap_or(0) as u32, br.to_ascii_uppercase(), page_setup(&plot)));
+            let mut page = page_setup(&plot);
+            // The public DXF PLOTSETTINGS reference has no plot-transparency flag. Keep our
+            // setting in CADCRAFT xdata, alongside the saved paper-space view, not group 70.
+            let list = dxf_ext::xdata_list(dxf_ext::xdata(&tg, dxf_ext::APP), "PLOTTRANSPARENCY");
+            page.plot_transparency = matches!(list, [value] if value.code == 1070 && value.i64() == 1);
+            layout_objs.push((t.s(1).unwrap_or_default(), t.i(71).unwrap_or(0) as u32, br.to_ascii_uppercase(), page));
         }
     }
 }
@@ -2160,6 +2165,13 @@ impl Objects {
                 dogleg: num(43, def.dogleg, 0.0),
                 text_style: text_style.unwrap_or(def.text_style),
                 annotative: t.i(296).unwrap_or(0) != 0,
+                block: (t.i(170) == Some(1))
+                    .then(|| t.s(343).and_then(|bh| rx.brs.get(&bh.trim().to_ascii_uppercase()).cloned()))
+                    .flatten()
+                    .filter(|n| d.block(n).is_some()),
+                block_scale: t.f(47).filter(|v| v.is_finite() && *v > 0.0 && *v <= 1.0e12).unwrap_or(1.0),
+                block_center: t.i(177).unwrap_or(0) == 0,
+                block_attribs: Default::default(),
             };
             match d.mleader_styles.iter_mut().find(|s| s.name.eq_ignore_ascii_case(name)) {
                 Some(x) => *x = st,
@@ -2221,6 +2233,9 @@ impl Objects {
             d.plot_style_tables = tables;
         }
         self.apply_mleader_styles(d, rx);
+        if let Some(text) = self.xrecord_text(crate::dxf_mleader_style::KEY) {
+            crate::dxf_mleader_style::apply(&mut d.mleader_styles, &text);
+        }
         crate::dxf_mleader::apply(d, &rx.mleader_fix, &self.names);
         for (name, view) in &self.layout_views {
             if let Some(l) = d.layouts.iter_mut().find(|l| l.name == *name) {

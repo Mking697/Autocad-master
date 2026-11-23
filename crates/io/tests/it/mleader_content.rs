@@ -5,6 +5,36 @@ use cadcraft_doc::{Block, Common, Drawing, Entity, EntityKind, Handle, Insert, L
 use cadcraft_geom::Vec3;
 
 #[test]
+fn block_style_defaults_round_trip_in_native_dxf_groups() {
+    let mut d = Drawing::new_metric();
+    let mut blk = Block::new("TAG");
+    blk.entities.push(Entity::new(Handle(0x100), EntityKind::Line(Line { a: Vec3::ZERO, b: Vec3::new(2.0, 2.0, 0.0) })));
+    d.blocks.insert(blk.name.clone(), std::sync::Arc::new(blk));
+    let style: cadcraft_doc::MLeaderStyle = serde_json::from_value(serde_json::json!({
+        "name": "Symbols", "block": "TAG", "blockScale": 2.5, "blockCenter": false,
+        "blockAttribs": {"NUM": "Ω \\U+0041 \\P"}
+    }))
+    .unwrap();
+    d.mleader_styles.push(style);
+    let bytes = cadcraft_io::write(&d, "a.dxf").unwrap();
+    let back = cadcraft_io::read(&bytes, "a.dxf").unwrap();
+    let got = back.mleader_styles.iter().find(|s| s.name == "Symbols").unwrap();
+    let fields = serde_json::to_value(got).unwrap();
+    assert_eq!(fields["block"], "TAG");
+    assert_eq!(fields["blockScale"], 2.5);
+    assert_eq!(fields["blockCenter"], false);
+    assert_eq!(fields["blockAttribs"]["NUM"], "Ω \\U+0041 \\P");
+    // Inspect the standard MLEADERSTYLE object rather than trusting our own reader alone.
+    let tags = cadcraft_dxf::parse(&bytes).unwrap();
+    assert!(tags.iter().any(|t| t.code == 343 && t.str() != "0"));
+    assert!(tags.iter().any(|t| t.code == 47 && t.f64() == 2.5));
+    // The native DWG bridge must retain the new style's block pointer and scale too.
+    let dwg = cadcraft_io::write(&d, "style.dwg").unwrap();
+    let reopened = cadcraft_io::read(&dwg, "style.dwg").unwrap();
+    assert_eq!(reopened.mleader_styles.iter().find(|s| s.name == "Symbols"), d.mleader_styles.iter().find(|s| s.name == "Symbols"));
+}
+
+#[test]
 fn spline_leader_and_block_content_are_written() {
     let mut d = Drawing::new_metric();
     let mut blk = Block::new("TAG");

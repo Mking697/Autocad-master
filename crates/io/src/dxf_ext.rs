@@ -134,6 +134,7 @@ pub(crate) const DIM_CODES: &[(&str, i32, K)] = &[
     ("suppressDim1", 281, K::Bool),
     ("suppressDim2", 282, K::Bool),
     ("tolJust", 283, K::Int),
+    ("userPositionedText", 288, K::Bool),
     ("fit", 289, K::Int),
     ("fixedExt", 290, K::Bool),
     ("leaderArrowBlock", 341, K::Block),
@@ -657,7 +658,7 @@ pub(crate) fn constraint_chunks(constraints: &[Constraint], parametric: &Paramet
 
 /// JSON text split into XRECORD strings of at most 250 characters. Backslashes are written as
 /// `\u005c` so no chunk contains a DXF `\U+` escape.
-fn json_chunks(json: &str) -> Vec<String> {
+pub(crate) fn json_chunks(json: &str) -> Vec<String> {
     let mut safe = String::with_capacity(json.len());
     let mut it = json.chars().peekable();
     while let Some(c) = it.next() {

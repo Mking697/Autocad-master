@@ -131,7 +131,7 @@ pub(in crate::cmd) fn override_arrows(dm: &cadcraft_doc::Dimension) -> impl Iter
 /// arrowhead blocks dimension styles and dimension overrides name.
 pub(in crate::cmd) fn used_blocks(d: &Drawing) -> HashSet<String> {
     let mut used = HashSet::new();
-    let mut frontier: Vec<String> = Vec::new();
+    let mut frontier: Vec<String> = d.mleader_styles.iter().filter_map(|st| st.block.clone()).collect();
     for st in &d.dim_styles {
         frontier.extend(
             [&st.arrow_block, &st.arrow_block1, &st.arrow_block2, &st.leader_arrow_block]

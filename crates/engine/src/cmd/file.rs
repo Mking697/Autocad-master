@@ -49,6 +49,18 @@ pub fn io() -> Option<&'static IoHooks> {
     IO.get()
 }
 
+/// Optional explicit salvage reader. OPEN always keeps using the normal read hook.
+pub type RecoverHook = fn(&[u8], &str) -> std::result::Result<Drawing, String>;
+static RECOVER: OnceLock<RecoverHook> = OnceLock::new();
+
+pub fn set_recover(h: RecoverHook) {
+    let _ = RECOVER.set(h);
+}
+
+pub fn recover_reader() -> Option<RecoverHook> {
+    RECOVER.get().copied()
+}
+
 /// An entity as DXF groups and back, for AutoLISP's `entget`, `entmake` and `entmod`
 /// (installed by the app with the DXF reader and writer, a lower layer).
 pub struct EntityCodec {

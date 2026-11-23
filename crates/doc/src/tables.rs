@@ -252,6 +252,9 @@ pub struct DimStyle {
     /// DIMTOFL: a dimension line between the extension lines even when the arrows are outside
     /// (through the circle for radius and diameter dimensions with the text outside).
     pub force_line_inside: bool,
+    /// DIMUPT: the cursor positions text as well as the dimension line during creation.
+    /// Later DIMTEDIT positions are honoured regardless of this style option.
+    pub user_positioned_text: bool,
     /// DIMTMOVE, when the text is moved away from its default place: 0 the dimension line
     /// moves with it, 1 a leader joins them, 2 neither.
     pub text_move: u8,
@@ -343,6 +346,7 @@ pub const DIMVARS: &[(&str, &str)] = &[
     ("DIMTIX", "textInside"),
     ("DIMSOXD", "suppressOutsideArrows"),
     ("DIMTOFL", "forceLineInside"),
+    ("DIMUPT", "userPositionedText"),
     ("DIMTMOVE", "textMove"),
     ("DIMTVP", "textVerticalPos"),
     ("DIMTOLJ", "tolJust"),
@@ -421,6 +425,7 @@ impl Default for DimStyle {
             text_inside: false,
             suppress_outside_arrows: false,
             force_line_inside: false,
+            user_positioned_text: false,
             text_move: 0,
             text_vertical_pos: 0.0,
             tol_just: 1,
@@ -454,6 +459,18 @@ impl DimStyle {
     fn coerce_value(old: &serde_json::Value, v: &serde_json::Value, field: &str) -> serde_json::Value {
         use serde_json::Value;
         match (old, v) {
+            // DIMUPT is a switch, not an arbitrary nonzero number. Keep invalid input typed as
+            // supplied so deserialisation rejects it rather than silently enabling manual text.
+            (Value::Bool(_), Value::Number(n)) if field == "userPositionedText" => match n.as_f64() {
+                Some(0.0) => Value::Bool(false),
+                Some(1.0) => Value::Bool(true),
+                _ => v.clone(),
+            },
+            (Value::Bool(_), Value::String(t)) if field == "userPositionedText" => match t.trim().to_ascii_lowercase().as_str() {
+                "0" | "off" | "false" | "no" => Value::Bool(false),
+                "1" | "on" | "true" | "yes" => Value::Bool(true),
+                _ => v.clone(),
+            },
             (Value::Bool(_), Value::Number(n)) => Value::Bool(n.as_f64().is_some_and(|x| x != 0.0)),
             (Value::Bool(_), Value::String(t)) => Value::Bool(matches!(t.to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes")),
             (Value::Number(_), Value::String(t)) => match t.trim().parse::<f64>() {
@@ -638,6 +655,14 @@ pub struct MLeaderStyle {
     pub text_style: String,
     /// New multileaders of this style are annotative.
     pub annotative: bool,
+    /// Default block content for new multileaders; `None` uses MText.
+    pub block: Option<String>,
+    /// Uniform scale of the default content block.
+    pub block_scale: f64,
+    /// Attach the centre of the block extents instead of its insertion point.
+    pub block_center: bool,
+    /// Default values for nonconstant block attributes, keyed by case-insensitive tag.
+    pub block_attribs: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for MLeaderStyle {
@@ -650,11 +675,30 @@ impl Default for MLeaderStyle {
             dogleg: 0.36,
             text_style: "Standard".into(),
             annotative: false,
+            block: None,
+            block_scale: 1.0,
+            block_center: true,
+            block_attribs: Default::default(),
         }
     }
 }
 
 impl MLeaderStyle {
+    /// Bounds shared by commands and file metadata readers.
+    pub const MAX_BLOCK_ATTRIBS: usize = 1024;
+    pub const MAX_BLOCK_ATTRIB_BYTES: usize = 1 << 20;
+
+    pub fn valid_block_attribs(values: &std::collections::BTreeMap<String, String>) -> bool {
+        if values.len() > Self::MAX_BLOCK_ATTRIBS {
+            return false;
+        }
+        let mut bytes = 0usize;
+        values.iter().all(|(tag, value)| {
+            bytes = bytes.saturating_add(tag.len()).saturating_add(value.len());
+            !tag.trim().is_empty() && tag.len() <= 255 && value.len() <= 65_536 && bytes <= Self::MAX_BLOCK_ATTRIB_BYTES
+        })
+    }
+
     /// The Standard style for metric drawings: text and arrows as high as ISO-25's.
     pub fn metric() -> Self {
         MLeaderStyle { arrow_size: 2.5, text_height: 2.5, landing_gap: 0.625, dogleg: 5.0, ..Default::default() }

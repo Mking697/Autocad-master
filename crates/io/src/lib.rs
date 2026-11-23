@@ -8,12 +8,14 @@ mod dxf_raw;
 mod dxf_ext;
 mod dxf_image;
 mod dxf_mleader;
+mod dxf_mleader_style;
 mod dxf_read;
 mod dxf_table;
 mod dxf_write;
 mod dxf_xref;
 pub mod pdf;
 pub mod plotter;
+pub mod recovery;
 pub mod svg;
 mod svg_read;
 
