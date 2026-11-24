@@ -582,6 +582,39 @@ fn trim_and_extend_ellipse_and_spline() {
     assert!(s.execute("extend", &json!({"handle": nh, "pick": [4.5, 0]})).is_err());
 }
 
+/// Top-10 #3 (docs/gaps.md): trimming/extending a LINE against an ELLIPSE cutting edge now uses
+/// `line_ellipse`, exact, alongside the tessellated-chord candidates (additive, per the lesson
+/// recorded in `craft-apps-rust-workflow`: never suppress the chord candidates).
+#[test]
+fn trim_and_extend_a_line_against_an_ellipse_cutting_edge_is_exact() {
+    // Ellipse x^2/16 + y^2/4 = 1 (major 4, ratio 0.5): crosses y=0 at x = +/-4 exactly.
+    let mut s = Session::new();
+    h(&s.execute("ellipse", &json!({"center": [0, 0], "major": [4, 0], "ratio": 0.5})).unwrap());
+    let l = h(&s.execute("line", &json!({"points": [[-10, 0], [10, 0]]})).unwrap());
+    // Picking the middle piece (between the two exact crossings at x = -4 and x = 4) removes
+    // it, leaving the two outer pieces whose shared boundary is each exact crossing.
+    let r = s.execute("trim", &json!({"handle": l, "pick": [0, 0]})).unwrap();
+    let nh = r["handles"][0].as_str().unwrap().to_string();
+    match kind(&s, &nh) {
+        EntityKind::Line(x) => {
+            assert!((x.a.x - -10.0).abs() < 1e-9 && x.a.y == 0.0, "{x:?}");
+            assert!((x.b.x - -4.0).abs() < 1e-9 && x.b.y == 0.0, "{x:?}");
+        }
+        k => panic!("{k:?}"),
+    }
+
+    let mut s = Session::new();
+    h(&s.execute("ellipse", &json!({"center": [0, 0], "major": [4, 0], "ratio": 0.5})).unwrap());
+    let l = h(&s.execute("line", &json!({"points": [[-2, 0], [0, 0]]})).unwrap());
+    s.execute("extend", &json!({"handle": l, "pick": [-2, 0]})).unwrap();
+    match kind(&s, &l) {
+        EntityKind::Line(x) => {
+            assert!((x.a.x - -4.0).abs() < 1e-9 && x.a.y == 0.0, "{x:?}");
+        }
+        k => panic!("{k:?}"),
+    }
+}
+
 #[test]
 fn new_modify_commands_survive_garbage_input() {
     let ids = ["pedit", "splinedit", "lengthen", "align", "blend", "reverse", "ncopy", "chspace", "flatten", "fillet", "trim", "extend"];

@@ -868,8 +868,12 @@ pub(crate) struct Edges<'a> {
     pub implied: bool,
 }
 
-/// All primitives of the cutting edges (excluding `exclude`).
-fn edge_segments(s: &Session, edges: Edges, exclude: Handle) -> Result<Vec<Segment>> {
+/// All primitives of the cutting edges (excluding `exclude`). `skip_ellipses`: for a caller that
+/// handles ellipse cutting edges exactly itself (via [`edge_ellipses`]/`line_ellipse`, docs/gaps.md
+/// Top-10 #3) -- omits their tessellated chords so the two candidate sets can't duplicate each
+/// other near the same crossing (trim/extend pick whichever candidate is numerically nearest the
+/// pick/ray, so an approximate near-duplicate can otherwise beat the exact one).
+fn edge_segments_ex(s: &Session, edges: Edges, exclude: Handle, skip_ellipses: bool) -> Result<Vec<Segment>> {
     let d = s.doc()?;
     let space = s.space();
     let store = d.space(&space).ok_or(EngineError::NoDocument)?;
@@ -890,10 +894,51 @@ fn edge_segments(s: &Session, edges: Edges, exclude: Handle) -> Result<Vec<Segme
             continue;
         }
         for p in e.kind.prims() {
+            if skip_ellipses && matches!(p, Prim::Ellipse(_)) {
+                continue;
+            }
             out.extend(prim_to_segments(&p));
         }
     }
     Ok(out)
+}
+
+/// All primitives of the cutting edges (excluding `exclude`).
+fn edge_segments(s: &Session, edges: Edges, exclude: Handle) -> Result<Vec<Segment>> {
+    edge_segments_ex(s, edges, exclude, false)
+}
+
+/// The cutting edges' full ellipses/elliptical arcs, exact (not the tessellated chords
+/// `edge_segments` returns) — for a line being trimmed or extended across one, so that specific
+/// pair can use `line_ellipse` instead of a chord approximation (docs/gaps.md Top-10 #3).
+/// Deliberately does not also cover EDGEMODE's implied full-circle run-on, to keep this narrow.
+fn edge_ellipses(s: &Session, edges: Edges, exclude: Handle) -> Result<Vec<cadcraft_geom::Ellipse>> {
+    let d = s.doc()?;
+    let space = s.space();
+    let store = d.space(&space).ok_or(EngineError::NoDocument)?;
+    let mut out = Vec::new();
+    for e in store.iter() {
+        if e.handle == exclude || !d.is_visible(e) || edges.implied {
+            continue;
+        }
+        if let Some(es) = edges.only
+            && !es.contains(&e.handle)
+        {
+            continue;
+        }
+        for p in e.kind.prims() {
+            if let Prim::Ellipse(el) = p {
+                out.push(el);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Exact crossings of the finite line `ln` with the cutting ellipses, as parameters along `ln`
+/// (only those actually on `ln`'s own extent, matching `line_ellipse`'s own convention).
+fn line_ellipse_params(ln: &Line, ellipses: &[cadcraft_geom::Ellipse]) -> Vec<f64> {
+    ellipses.iter().flat_map(|el| cadcraft_geom::line_ellipse(ln, el)).map(|(_, t)| t).collect()
 }
 
 /// `k` as an implied edge (EDGEMODE 1), for lines, arcs and open polylines.
@@ -954,12 +999,17 @@ pub(crate) fn trim(s: &mut Session, h: Handle, pick: Vec2, edges: Edges) -> Resu
     let pieces: Vec<EntityKind> = match &e.kind {
         EntityKind::Line(l) => {
             let ln = Line::new(l.a.xy(), l.b.xy());
-            let mut ts: Vec<f64> = cut
+            // Ellipse cutting edges are handled exactly below (docs/gaps.md Top-10 #3), so the
+            // chord-tessellated set here excludes them -- otherwise trim's "numerically nearest
+            // the pick" selection could pick an approximate near-duplicate over the exact value.
+            let cut_lines = edge_segments_ex(s, edges, h, true)?;
+            let mut ts: Vec<f64> = cut_lines
                 .iter()
                 .flat_map(|c| intersect_ext(&Segment::Line(ln), c, false))
                 .map(|x| ln.param_of(x))
                 .filter(|t| *t > 1e-9 && *t < 1.0 - 1e-9)
                 .collect();
+            ts.extend(line_ellipse_params(&ln, &edge_ellipses(s, edges, h)?).into_iter().filter(|t| *t > 1e-9 && *t < 1.0 - 1e-9));
             ts.sort_by(f64::total_cmp);
             let tp = ln.param_of(pick).clamp(0.0, 1.0);
             let lo = ts.iter().copied().filter(|t| *t < tp).fold(0.0, f64::max);
@@ -1149,12 +1199,13 @@ pub(crate) fn extend(s: &mut Session, h: Handle, pick: Vec2, edges: Edges) -> Re
             let from_b = pick.dist(b) < pick.dist(a);
             let (fixed, end) = if from_b { (a, b) } else { (b, a) };
             let dir = (end - fixed).normalized();
-            let ray = Segment::Line(Line::new(end, end + dir * 1e8));
-            let best = cut
-                .iter()
-                .flat_map(|c| intersect_ext(&ray, c, false))
-                .filter(|x| (*x - end).dot(dir) > 1e-9)
-                .min_by(|x, y| x.dist(end).total_cmp(&y.dist(end)));
+            let ray_line = Line::new(end, end + dir * 1e8);
+            let ray = Segment::Line(ray_line);
+            // Ellipse cutting edges are handled exactly below (docs/gaps.md Top-10 #3), so the
+            // chord-tessellated set here excludes them -- same reason as trim's Line case above.
+            let mut hits: Vec<Vec2> = edge_segments_ex(s, edges, h, true)?.iter().flat_map(|c| intersect_ext(&ray, c, false)).collect();
+            hits.extend(edge_ellipses(s, edges, h)?.iter().flat_map(|el| cadcraft_geom::line_ellipse(&ray_line, el)).map(|(p, _)| p));
+            let best = hits.into_iter().filter(|x| (*x - end).dot(dir) > 1e-9).min_by(|x, y| x.dist(end).total_cmp(&y.dist(end)));
             let np = best.ok_or_else(|| EngineError::Other("Object does not intersect an edge.".into()))?;
             if from_b { line(a, np) } else { line(np, b) }
         }
