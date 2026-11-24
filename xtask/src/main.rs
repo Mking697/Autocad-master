@@ -4,6 +4,7 @@
 //! invoked through `std::process::Command`.
 
 mod assets;
+mod corpus;
 mod ico;
 mod layers;
 mod parity;
@@ -24,7 +25,8 @@ commands:
   i18n            print the strings each interface language shows in English (never fails)
   ci              fmt --check, clippy -D warnings, test, i18n, assets, layers, wasm (stops at first failure)
   corpus [--download]
-                  show where test corpora live; --download fetches PngSuite into corpus/pngsuite
+                  real-file DWG/DXF open->save->reopen check (CADCRAFT_CORPUS_DIR); no-op if
+                  none is set up (never fails CI). --download fetches PngSuite into corpus/pngsuite
   stats [--exact] count tests and lines per crate (--exact: ask the test harness via `-- --list`)
   parity          recompute the AutoCAD menu-breadth checklist in docs/parity-checklist.md
   ico <out.ico> <in.png>...
@@ -226,7 +228,6 @@ fn cmd_ci() -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_corpus(_download: bool) -> Result<(), String> {
-    println!("Test corpora live in storytold/cadcraft-corpus (planned); never commit large binaries here.");
-    Ok(())
+fn cmd_corpus(download: bool) -> Result<(), String> {
+    corpus::run(download)
 }
