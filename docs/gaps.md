@@ -142,9 +142,20 @@ a phase is fine.
       fallback like `Arc::closest`, and a safe never-regress fallback to the old tessellated
       search if Newton doesn't land at least as close (3 new tests, one verified independently
       via the gradient-parallel-to-normal optimality condition, one via the trivial circle
-      special case). This is used by OSNAP's nearest/closest-point queries. Still a real,
+      special case). This is used by OSNAP's nearest/closest-point queries. Landed 2026-11-24:
+      `line_ellipse` (`crates/geom/src/intersect.rs`) is also now exact — an affine map (scale
+      each axis to 1) turns the ellipse into a unit circle and the line into another line,
+      preserving its parameter exactly, so `line_circle` on the transformed pair gives the roots
+      directly; each hit's local angle IS the ellipse's own parameter, so trimming to a partial
+      arc's sweep needs no re-derivation. 3 new tests (an analytic axis-aligned case, a tangent,
+      an arc-sweep filter). Not yet wired into any command (INTERSECT, snap's `prim_segments`,
+      TRIM/EXTEND's cutting-edge search still tessellate) — this session's slice was the pure,
+      tested geometry function only, kept separate from wiring it into a consumer since that's
+      a larger, riskier change with several call sites to re-verify one at a time. Still a real,
       substantial gap: ellipse/spline offset curves (an ellipse's offset is not itself an
-      ellipse — a genuinely harder curve to represent exactly) and exact intersections
+      ellipse — a genuinely harder curve to represent exactly), ellipse∩circle/ellipse∩ellipse
+      and any spline intersection, and wiring the two exact functions landed so far into the
+      commands that still tessellate
 - [ ] Top-10 #4 / F3 **[alpha blocker]**: dynamic-block authoring (parameters and actions in the
       Block Editor) — references/editing already work, only authoring is missing
 - [x] FF6 **[found already done]**: DWG throughput's UI-freeze half already fixed (background

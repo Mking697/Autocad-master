@@ -1,4 +1,35 @@
-use crate::{Arc, Circle, EPS, Line, Segment, Vec2};
+use crate::{Arc, Circle, EPS, Ellipse, Line, Segment, Vec2, angle_in_sweep, norm_angle};
+
+/// Intersections of the infinite line through `l` with an ellipse (or elliptical arc), exact
+/// (not tessellated): an affine map (scale `1/major_len` along the major axis, `1/minor_len`
+/// along the minor one) turns the ellipse into the unit circle centred at the origin and the
+/// line into another line, preserving the line's parameter `t` exactly (affine maps preserve
+/// ratios along a line) — so `line_circle` on the transformed pair gives the roots directly.
+/// Each transformed hit's angle around the origin IS the ellipse's own parameter (the same
+/// substitution `Ellipse::at_param` uses in reverse), so trimming to a partial arc's sweep is
+/// exact too, no re-derivation needed. Returns (point on the real line, its parameter `t`).
+pub fn line_ellipse(l: &Line, e: &Ellipse) -> Vec<(Vec2, f64)> {
+    let a = e.major.len();
+    if !(a.is_finite() && a > EPS) {
+        return Vec::new();
+    }
+    let b = a * e.ratio;
+    if !(b.is_finite() && b > EPS) {
+        return Vec::new();
+    }
+    let u = e.major / a;
+    let v = u.perp();
+    let to_local = |p: Vec2| {
+        let q = p - e.center;
+        Vec2::new(q.dot(u) / a, q.dot(v) / b)
+    };
+    let local = Line::new(to_local(l.a), to_local(l.b));
+    line_circle(&local, &Circle::new(Vec2::ZERO, 1.0))
+        .into_iter()
+        .filter(|(local_hit, _)| e.is_full() || angle_in_sweep(norm_angle(local_hit.y.atan2(local_hit.x)), e.start, e.end))
+        .map(|(_, t)| (l.a.lerp(l.b, t), t))
+        .collect()
+}
 
 /// Intersection of two infinite lines through (a1,a2) and (b1,b2), with parameters on each.
 pub fn line_line_infinite(a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2) -> Option<(Vec2, f64, f64)> {

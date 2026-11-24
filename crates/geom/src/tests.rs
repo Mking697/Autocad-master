@@ -248,6 +248,43 @@ fn elliptical_arc_closest_falls_back_to_an_endpoint_outside_the_sweep() {
 }
 
 #[test]
+fn line_ellipse_is_exact_on_an_axis_aligned_case() {
+    // Ellipse x^2/100 + y^2/16 = 1 (a=10, b=4), cut by the horizontal line y=2: analytically
+    // x = +-sqrt(100*(1 - 4/16)) = +-sqrt(75).
+    let e = Ellipse::full(Vec2::ZERO, Vec2::new(10.0, 0.0), 0.4);
+    let l = Line::new(Vec2::new(-50.0, 2.0), Vec2::new(50.0, 2.0));
+    let mut hits: Vec<Vec2> = line_ellipse(&l, &e).into_iter().map(|(p, _)| p).collect();
+    hits.sort_by(|a, b| a.x.total_cmp(&b.x));
+    assert_eq!(hits.len(), 2, "{hits:?}");
+    let want = 75.0_f64.sqrt();
+    assert!((hits[0].x + want).abs() < 1e-9 && (hits[0].y - 2.0).abs() < 1e-12, "{:?}", hits[0]);
+    assert!((hits[1].x - want).abs() < 1e-9 && (hits[1].y - 2.0).abs() < 1e-12, "{:?}", hits[1]);
+}
+
+#[test]
+fn line_ellipse_misses_and_tangents() {
+    let e = Ellipse::full(Vec2::ZERO, Vec2::new(10.0, 0.0), 0.4);
+    // Clean miss: a horizontal line above the ellipse's top (y=4).
+    assert!(line_ellipse(&Line::new(Vec2::new(-50.0, 5.0), Vec2::new(50.0, 5.0)), &e).is_empty());
+    // Tangent: exactly at the top, one hit (allow a doubled near-identical root).
+    let tangent = line_ellipse(&Line::new(Vec2::new(-50.0, 4.0), Vec2::new(50.0, 4.0)), &e);
+    assert!(!tangent.is_empty(), "a tangent line should still touch the ellipse");
+    assert!(tangent.iter().all(|(p, _)| p.near(Vec2::new(0.0, 4.0), 1e-6)), "{tangent:?}");
+}
+
+#[test]
+fn line_ellipse_respects_the_elliptical_arcs_sweep() {
+    // A quarter ellipse (0..90 deg, the "upper right" quarter): a vertical line through x=5
+    // crosses the full ellipse at two points, only one of which (the positive-y one) is on
+    // this quarter's sweep.
+    let e = Ellipse { center: Vec2::ZERO, major: Vec2::new(10.0, 0.0), ratio: 0.4, start: 0.0, end: PI / 2.0 };
+    let l = Line::new(Vec2::new(5.0, -50.0), Vec2::new(5.0, 50.0));
+    let hits = line_ellipse(&l, &e);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(hits[0].0.y > 0.0, "{:?}", hits[0]);
+}
+
+#[test]
 fn segment_offset() {
     let s = Segment::Arc { arc: Arc::new(Vec2::ZERO, 5.0, 0.0, PI), ccw: true };
     let o = s.offset(1.0).unwrap();
