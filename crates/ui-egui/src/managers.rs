@@ -305,6 +305,9 @@ enum Field {
     Num(&'static str, &'static str, f64),
     Bool(&'static str, &'static str, bool),
     Choice(&'static str, &'static str, String, Vec<String>),
+    /// A block-or-none choice (MLEADERSTYLE's default content block): `None` shows as
+    /// `"(MText)"` and is sent as JSON `null`; `Some(name)` is sent as that block name.
+    BlockChoice(&'static str, &'static str, Option<String>, Vec<String>),
 }
 
 struct Style {
@@ -370,6 +373,7 @@ fn mleader_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Acti
         return None;
     };
     let text_styles: Vec<String> = d.text_styles.iter().map(|s| s.name.clone()).collect();
+    let block_names: Vec<String> = d.blocks.values().filter(|b| !b.name.starts_with('*')).map(|b| b.name.clone()).collect();
     let mut styles: Vec<Style> = d
         .mleader_styles
         .iter()
@@ -381,6 +385,10 @@ fn mleader_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Acti
                 Field::Num("landingGap", "Landing gap", s.landing_gap),
                 Field::Num("dogleg", "Landing length", s.dogleg),
                 Field::Choice("textStyle", "Text style", s.text_style.clone(), text_styles.clone()),
+                Field::Bool("annotative", "Annotative", s.annotative),
+                Field::BlockChoice("block", "Default content", s.block.clone(), block_names.clone()),
+                Field::Num("blockScale", "Block content scale", s.block_scale),
+                Field::Bool("blockCenter", "Attach block centre (not insertion point)", s.block_center),
             ],
         })
         .collect();
@@ -456,6 +464,23 @@ fn style_manager(ctx: &egui::Context, open: &mut bool, title: &str, cmd: &'stati
                                 }
                             });
                             picked.map(|c| (*key, json!(c)))
+                        }
+                        Field::BlockChoice(key, label, v, choices) => {
+                            const NONE_LABEL: &str = "(MText)";
+                            ui.label(*label);
+                            let shown = v.as_deref().unwrap_or(NONE_LABEL);
+                            let mut picked = None;
+                            egui::ComboBox::from_id_salt((cmd, *key)).selected_text(shown).show_ui(ui, |ui| {
+                                if ui.selectable_label(v.is_none(), NONE_LABEL).clicked() && v.is_some() {
+                                    picked = Some(None);
+                                }
+                                for c in choices {
+                                    if ui.selectable_label(v.as_deref() == Some(c.as_str()), c).clicked() && v.as_deref() != Some(c.as_str()) {
+                                        picked = Some(Some(c.clone()));
+                                    }
+                                }
+                            });
+                            picked.map(|c| (*key, c.map_or(Value::Null, |c| json!(c))))
                         }
                     };
                     if let Some((key, v)) = change {
@@ -1263,5 +1288,43 @@ mod plot_dialog_tests {
         plot_window_resume(&mut app, &ctx);
         assert_eq!(app.ui.dialog.as_deref(), Some("plot"));
         assert_eq!(temp::<PlotState>(&ctx, "plot_state").unwrap().window, [2.0, 3.0, 12.0, 9.0]);
+    }
+}
+
+#[cfg(test)]
+mod mleaderstyle_dialog_tests {
+    use super::*;
+    use cadcraft_engine::Session;
+
+    /// MLEADERSTYLE's annotative/block/blockScale/blockCenter fields (already real in the
+    /// engine and doc model, see `docs/gaps.md` F10) render in the dialog without panicking,
+    /// whether the style's default content is MText (`block: None`) or a named block, and the
+    /// `BlockChoice` field's JSON mapping round-trips through the real `mleaderstyle` command.
+    #[test]
+    fn dialog_renders_block_content_fields_for_mtext_and_block_defaults() {
+        let mut app = CadApp::new(Session::new(), crate::Services::default());
+        app.run("point", json!({"at": [0.0, 0.0]})).unwrap();
+        let pt = app.session.doc().unwrap().model.iter().next().unwrap().handle.hex();
+        app.run("block", json!({"name": "Tag", "base": [0.0, 0.0], "handles": [pt], "keep": "retain"})).unwrap();
+
+        // Default (MText) content: the dialog must render `block: None` without panicking.
+        route(&mut app, "mleaderstyle", &Value::Null).unwrap().unwrap();
+        let ctx = egui::Context::default();
+        let mut open = true;
+        ctx.run_ui(egui::RawInput::default(), |ui| dialog(&mut app, ui.ctx(), "mleaderstyle", &mut open)).drop_without_applying_deltas();
+        assert!(open);
+
+        // Switch Standard to block content through the real command, then render again.
+        app.run(
+            "mleaderstyle",
+            json!({"name": "Standard", "annotative": true, "block": "Tag", "blockScale": 2.0, "blockCenter": true, "current": false}),
+        )
+        .unwrap();
+        let st = app.session.doc().unwrap().mleader_styles.iter().find(|s| s.name == "Standard").cloned().unwrap();
+        assert_eq!(st.block.as_deref(), Some("Tag"));
+        assert!(st.annotative && st.block_center);
+        assert_eq!(st.block_scale, 2.0);
+        ctx.run_ui(egui::RawInput::default(), |ui| dialog(&mut app, ui.ctx(), "mleaderstyle", &mut open)).drop_without_applying_deltas();
+        assert!(open);
     }
 }
