@@ -535,8 +535,14 @@ fn finish(
             for s in prim_segments(p) {
                 consider(fix_circle(&s).closest(cursor));
             }
-            if let Prim::Circle(c) = p {
-                consider(c.closest(cursor));
+            match p {
+                Prim::Circle(c) => consider(c.closest(cursor)),
+                // `Ellipse::closest` is exact (Newton's method, not tessellated, see
+                // docs/gaps.md Top-10 #3) — considered alongside the tessellated segments above
+                // so NEA snaps to the true closest point on an ellipse/elliptical arc instead of
+                // the nearest tessellation chord.
+                Prim::Ellipse(e) => consider(e.closest(cursor)),
+                _ => {}
             }
         }
         if let Some((_, p)) = nb {
@@ -1121,6 +1127,31 @@ mod tests {
         assert!(osnap(&d, &Space::Model, Vec2::new(20.0, 2.1), 0.5, mode::QUA, None, false).unwrap().point.near(Vec2::new(20.0, 2.0), 1e-9));
         let t = osnap(&d, &Space::Model, Vec2::new(19.9, 1.9), 1.0, mode::TAN, Some(Vec2::new(10.0, 0.0)), false);
         assert!(t.is_some());
+    }
+
+    /// Top-10 #3 (docs/gaps.md): NEA on an ellipse now uses `Ellipse::closest` (exact) directly,
+    /// not just the nearest point among tessellated chords.
+    #[test]
+    fn nearest_on_an_ellipse_is_exact() {
+        let mut d = Drawing::new_imperial();
+        d.add(
+            &Space::Model,
+            Common::default(),
+            EntityKind::Ellipse(cadcraft_doc::Ellipse {
+                center: Vec3::ZERO,
+                major: Vec3::new(100.0, 0.0, 0.0),
+                ratio: 0.4,
+                start: 0.0,
+                end: std::f64::consts::TAU,
+            }),
+        )
+        .unwrap();
+        let h = osnap(&d, &Space::Model, Vec2::new(88.0, 20.0), 10.0, mode::NEA, None, false).unwrap();
+        assert_eq!(h.name, "Nearest");
+        // On the ellipse (x^2/10000 + y^2/1600 = 1) to within f64 precision, not a coarse
+        // tessellation chord's tolerance.
+        let on_curve = h.point.x * h.point.x / 10000.0 + h.point.y * h.point.y / 1600.0;
+        assert!((on_curve - 1.0).abs() < 1e-9, "{:?} is not exactly on the ellipse (residual {on_curve})", h.point);
     }
 
     #[test]
