@@ -174,7 +174,26 @@ a phase is fine.
       need review before claiming every returned hit lies on the actual ellipse. The original
       NEA regression covers one exterior cursor only. Still open: ellipse/spline offsets,
       ellipse-circle, ellipse-ellipse and spline intersections, and the remaining consumer
-      wiring (rays/xlines, INTERSECT, ARC/CIRCLE-trimmed-by-ellipse, any curve∩curve pair).
+      wiring (rays/xlines -- now also done, `bd893497`: OSNAP INT/APP's exact line_ellipse pairing covers
+      Prim::Infinite the same way as finite segments; ARC/CIRCLE-trimmed-by-ellipse and any
+      curve-curve pair remain). **Session verdict, 2026-11-24: the line∩ellipse slice of Top-10
+      #3 is now substantially done** (closest-point, line intersection, and wiring into OSNAP
+      NEA/INT/APP for segments+xline/ray, and TRIM/EXTEND for lines) -- all additive/exclusive
+      merge-strategy bugs found and fixed, full engine suite green at every landed commit. The
+      user explicitly chose to stop here rather than push into the three remaining items, each
+      individually large and correctness-risky enough to need its own dedicated multi-session
+      effort, not a rushed add-on to this one:
+      - circle∩ellipse and ellipse∩ellipse exact intersection need a robust quartic-equation
+        solver (no closed form as simple as `line_ellipse`'s affine trick) -- a naive/unproven
+        solver risks silently wrong intersection points, a serious correctness bug for a CAD app
+        with the project's own `#![deny(clippy::unwrap_used, ...)]` and never-panic bar.
+      - any spline intersection (spline vs anything) is a genuinely hard CAD-kernel problem
+        (NURBS curve-curve intersection, typically recursive subdivision/clipping in real
+        kernels) -- multi-day effort even in mature commercial kernels.
+      - ellipse/spline OFFSET curves are a different kind of problem again (producing a new
+        curve, not just intersection points) and don't reduce to the root-finding work above.
+      Pick up any of these three only with dedicated session time budgeted for research,
+      implementation and extensive correctness testing -- not as a quick continuation.
 - [ ] Top-10 #4 / F3 **[alpha blocker]**: dynamic-block authoring (parameters and actions in the
       Block Editor) — references/editing already work, only authoring is missing
 - [x] FF6 **[found already done]**: DWG throughput's UI-freeze half already fixed (background
