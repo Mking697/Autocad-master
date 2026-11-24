@@ -128,8 +128,17 @@ a phase is fine.
       real open→save→reopen check (DXF and DWG) against `CADCRAFT_CORPUS_DIR`, verified against
       synthetic files — no-op when unset, never fails CI. Still needs the human owner: real
       licensed files in `storytold/cadcraft-corpus`, and the AutoCAD black-box check (see FF5)
-- [ ] Top-10 #3: exact ellipse/spline geometry (intersections, offsets, closest points; bulge-
-      aware polyline offset)
+- [ ] Top-10 #3: exact ellipse/spline geometry (intersections, offsets, closest points). Re-
+      checked 2026-11-24: "bulge-aware polyline offset" in this row's own wording is stale —
+      `cmd/modify.rs::offset_polyline` already offsets each polyline segment exactly (arcs via
+      `Segment::offset`'s concentric-circle math, not tessellation) and converts the result back
+      to an exact bulge, proven by the existing test `offset_polyline_arc_bulge_follows_joined_endpoints`
+      (checks the offset arc's exact centre and radius). Confirmed NOT stale: ellipse/spline
+      offset genuinely still comes out as a tessellated polyline approximation — confirmed by
+      `offset_elliptical_arc_follows_picked_side`, which can only assert the result's bounds to
+      within 0.05 units because it IS a polyline, not an exact ellipse. Still a real, substantial
+      gap: exact elliptical-arc offset curves (not themselves ellipses — a genuinely harder curve
+      to represent) and exact NURBS/spline offset, intersection and closest-point math
 - [ ] Top-10 #4 / F3 **[alpha blocker]**: dynamic-block authoring (parameters and actions in the
       Block Editor) — references/editing already work, only authoring is missing
 - [x] FF6 **[found already done]**: DWG throughput's UI-freeze half already fixed (background
