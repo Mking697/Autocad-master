@@ -326,19 +326,26 @@ fn osnap_in_with_prims(
             for j in i + 1..segs.len() {
                 // Use the actual curve for finite line/ellipse pairs, never their chords:
                 // an approximate candidate can otherwise beat the true hit by cursor distance.
+                // A finite line segment, or an infinite xline/ray (approximated the same way
+                // prim_to_segments does: a huge but finite chord in both directions, matching
+                // the existing chord-based behaviour's handling of the ray flag).
+                let as_line = |p: &Prim| match p {
+                    Prim::Seg(Segment::Line(l)) => Some((*l, true)),
+                    Prim::Infinite { base, dir, .. } => Some((cadcraft_geom::Line::new(*base - *dir * 1e7, *base + *dir * 1e7), false)),
+                    _ => None,
+                };
                 let ellipse_line = match (near_prims.get(i), near_prims.get(j)) {
-                    (Some(Prim::Ellipse(e)), Some(Prim::Seg(Segment::Line(l)))) | (Some(Prim::Seg(Segment::Line(l))), Some(Prim::Ellipse(e))) => {
-                        Some((e, l))
-                    }
+                    (Some(Prim::Ellipse(e)), Some(p)) => as_line(p).map(|(l, finite)| (e, l, finite)),
+                    (Some(p), Some(Prim::Ellipse(e))) => as_line(p).map(|(l, finite)| (e, l, finite)),
                     _ => None,
                 };
                 // Additive: also offer the exact crossing alongside the chord-based ones
                 // below (which keep their own tolerance for a near-miss cursor, e.g. a point
                 // slightly outside a tessellated ellipse by rounding) so cursor-distance ranking
                 // can prefer the true point when it's actually the nearer one.
-                if let Some((ellipse, line)) = ellipse_line {
-                    for (point, t) in cadcraft_geom::line_ellipse(line, ellipse) {
-                        if (-1e-9..=1.0 + 1e-9).contains(&t) && point.is_finite() && point.dist(cursor) <= aperture {
+                if let Some((ellipse, line, finite)) = ellipse_line {
+                    for (point, t) in cadcraft_geom::line_ellipse(&line, ellipse) {
+                        if (!finite || (-1e-9..=1.0 + 1e-9).contains(&t)) && point.is_finite() && point.dist(cursor) <= aperture {
                             cands.push((real, point));
                         }
                     }
@@ -1148,6 +1155,36 @@ mod tests {
             d.add(&Space::Model, Common::default(), kind).unwrap();
         }
         d
+    }
+
+    #[test]
+    fn ellipse_xline_and_ray_snap_use_the_exact_crossing() {
+        // Ellipse x^2/100 + y^2/25 = 1 (major 10, ratio 0.5): crosses y=3 at x = +/-8 exactly.
+        for ray in [false, true] {
+            let mut d = Drawing::new_imperial();
+            d.add(
+                &Space::Model,
+                Common::default(),
+                EntityKind::Ellipse(cadcraft_doc::Ellipse {
+                    center: Vec3::ZERO,
+                    major: Vec3::new(10.0, 0.0, 0.0),
+                    ratio: 0.5,
+                    start: 0.0,
+                    end: PI * 2.0,
+                }),
+            )
+            .unwrap();
+            let kind = if ray {
+                EntityKind::Ray(cadcraft_doc::RayLine { base: Vec3::new(-20.0, 3.0, 0.0), dir: Vec3::new(1.0, 0.0, 0.0) })
+            } else {
+                EntityKind::XLine(cadcraft_doc::RayLine { base: Vec3::new(0.0, 3.0, 0.0), dir: Vec3::new(1.0, 0.0, 0.0) })
+            };
+            d.add(&Space::Model, Common::default(), kind).unwrap();
+            for mask in [mode::INT, mode::APP, mode::INT | mode::APP] {
+                let hit = osnap(&d, &Space::Model, Vec2::new(8.0, 3.0), 0.5, mask, None, false).unwrap();
+                assert!(hit.point.near(Vec2::new(8.0, 3.0), 1e-9), "{hit:?}");
+            }
+        }
     }
 
     #[test]
