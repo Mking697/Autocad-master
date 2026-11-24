@@ -16,8 +16,6 @@ mod dimstyle_vars_roundtrip;
 mod dimtfill_roundtrip;
 mod drafting_spacing;
 #[cfg(not(target_arch = "wasm32"))]
-mod dwg_foreign_data_state;
-#[cfg(not(target_arch = "wasm32"))]
 mod dwg_header_vars;
 mod dwg_layout_owner;
 #[cfg(not(target_arch = "wasm32"))]

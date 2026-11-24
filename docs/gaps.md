@@ -98,25 +98,32 @@ a phase is fine.
       table widget)
 
 ### Phase 3 — big alpha blockers (≈30–90h each; scope and split into sub-PRs before starting)
-- [ ] Top-10 #1 **[alpha blocker]**: lossless DWG save through acadrust. Re-checked 2026-11-24
-      with a new diagnostic test (`crates/io/tests/it/dwg_foreign_data_state.rs`, 4 tests, run
-      against real DWG round trips): confirmed NOT stale, real losses remain. Precise findings —
-      an entity's own plain foreign xdata (`Common::xdata`, DXF 1001/1000 groups) already
-      survives a DWG round trip (no gap there). Still genuinely lost through acadrust's DWG
-      writer: an entity's extension dictionary + persistent reactors (`ForeignExtra::xdict`/
-      `reactors`), an entity's colour-book colour (`ForeignExtra::color_book`), and a whole
-      custom-class foreign object with its CLASS record (`Foreign::objects`/`classes` for a
-      kind acadrust doesn't model) — all come back empty/`None` after DWG save+reopen. Root
-      cause: acadrust (MPL-2.0, `crates/dwg/Cargo.toml` — "used unmodified") only translates the
-      DXF entities/structures it itself models when writing DWG bytes; our `Foreign`-tracked
-      raw data has nowhere to go in its DXF-text-in/DWG-bytes-out interface. Fixing this without
-      forking acadrust (policy: unmodified) means writing our own post-processing pass over the
-      DWG bytes it emits, to inject XDICTIONARY/reactor arrays, colour-book COLOR records and
-      custom-class OBJECT records directly using the ODA's public DWG spec — real low-level
-      binary engineering, not a dialog/wiring fix, and risky to rush (corrupts a user's save if
-      done wrong). Sizing for a future session: (1) extension dictionary + reactors on entities,
-      (2) colour books, (3) custom-class objects + CLASS table entries — each is likely its own
-      multi-hour sub-PR with its own round-trip tests, attempted one at a time, smallest first
+- [x] Top-10 #1 **[alpha blocker, found already done]**: lossless DWG save through acadrust.
+      2026-11-24 — first attempt was wrong, corrected the same session (see below), so trust
+      this version. First pass wrote a diagnostic test with hand-built `ForeignExtra`/
+      `Foreign::objects` fixtures (an xdict pointing straight at a raw "XRECORD" object instead
+      of a `DICTIONARY`, an orphan custom-class object with no owner/dictionary entry) and
+      concluded entity xdict/reactors/colour-books/custom-class objects were lost through DWG.
+      That was a false negative caused by malformed, unrealistic synthetic fixtures, not a real
+      product gap — proven by `crates/io/tests/it/roundtrip_audit.rs`'s existing, much more
+      careful tests (`extension_dictionaries_on_entities_and_table_records_are_kept`,
+      `dwg_keeps_extension_dictionaries_xrecords_and_entity_xdata`,
+      `true_colours_and_colour_books_are_kept`, `foreign_xdata_on_entities_tables_and_blocks_is_kept`,
+      `unknown_objects_in_named_and_nested_dictionaries_are_kept`,
+      `unknown_entities_in_model_paper_and_blocks_are_kept`), all run against BOTH a DXF and a
+      DWG save of the same realistic fixture (built by parsing real DXF text, not hand-built
+      structs) and all passing on today's unmodified code. An attempted "fix" (threading
+      `Foreign::entities` into `dxf_write.rs`'s `common`/`common_x`/`layer_and_props`) was
+      reverted after it broke 10 of these already-passing tests by double-writing data that a
+      pre-existing mechanism (`dxf_raw.rs`'s `entity_extra`/`finish` raw-tag rewriting pass,
+      which already threads `Foreign::entities` through after the structured writer runs) already
+      handles correctly. **Net finding: this row's entity-level scope (xdata, xdict, reactors,
+      colour books, custom-class objects/CLASS records) is already fully implemented and tested,
+      not a real gap.** If anything is still missing here, it is narrower than the row's original
+      wording suggested and needs a fresh, carefully-fixture-built test (reuse `roundtrip_audit.rs`'s
+      `fixture()`/`saves()` pattern, not hand-built `ForeignExtra` literals) before any more code
+      is written against it — don't trust a synthetic round-trip test that doesn't go through the
+      real DXF reader first.
 - [ ] Top-10 #2 **[alpha blocker]**: real-file DWG/DXF corpus + AutoCAD black-box check (needs
       the human owner for the AutoCAD check half; the corpus/test half is agent-doable)
 - [ ] Top-10 #3: exact ellipse/spline geometry (intersections, offsets, closest points; bulge-
