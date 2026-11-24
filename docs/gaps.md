@@ -136,9 +136,15 @@ a phase is fine.
       (checks the offset arc's exact centre and radius). Confirmed NOT stale: ellipse/spline
       offset genuinely still comes out as a tessellated polyline approximation — confirmed by
       `offset_elliptical_arc_follows_picked_side`, which can only assert the result's bounds to
-      within 0.05 units because it IS a polyline, not an exact ellipse. Still a real, substantial
-      gap: exact elliptical-arc offset curves (not themselves ellipses — a genuinely harder curve
-      to represent) and exact NURBS/spline offset, intersection and closest-point math
+      within 0.05 units because it IS a polyline, not an exact ellipse. Landed 2026-11-24:
+      `Ellipse::closest` (`crates/geom/src/curve.rs`) is now exact, not tessellated — Newton's
+      method on the parametric angle from `param_of`'s initial guess, trimmed-arc endpoint
+      fallback like `Arc::closest`, and a safe never-regress fallback to the old tessellated
+      search if Newton doesn't land at least as close (3 new tests, one verified independently
+      via the gradient-parallel-to-normal optimality condition, one via the trivial circle
+      special case). This is used by OSNAP's nearest/closest-point queries. Still a real,
+      substantial gap: ellipse/spline offset curves (an ellipse's offset is not itself an
+      ellipse — a genuinely harder curve to represent exactly) and exact intersections
 - [ ] Top-10 #4 / F3 **[alpha blocker]**: dynamic-block authoring (parameters and actions in the
       Block Editor) — references/editing already work, only authoring is missing
 - [x] FF6 **[found already done]**: DWG throughput's UI-freeze half already fixed (background

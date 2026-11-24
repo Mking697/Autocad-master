@@ -210,6 +210,44 @@ fn ellipse_points() {
 }
 
 #[test]
+fn ellipse_closest_is_exact_not_tessellated() {
+    // Axis-aligned ellipse, semi-axes 10 and 4: the closest point to an outside point must land
+    // exactly on the ellipse (checked algebraically), not just within tessellation's chord
+    // tolerance.
+    let e = Ellipse::full(Vec2::ZERO, Vec2::new(10.0, 0.0), 0.4);
+    let p = Vec2::new(12.0, 3.0);
+    let c = e.closest(p);
+    assert!((c.x * c.x / 100.0 + c.y * c.y / 16.0 - 1.0).abs() < 1e-10, "{c:?} is not on the ellipse");
+    // The real optimality condition, checked independently of the Newton derivation used to
+    // find `c`: the ellipse's normal there (gradient of x^2/a^2 + y^2/b^2) is parallel to
+    // (p - c), i.e. their cross product is ~0.
+    let grad = Vec2::new(c.x / 100.0, c.y / 16.0);
+    assert!(grad.cross(p - c).abs() < 1e-8, "closest point's normal isn't parallel to (p - closest): {c:?}");
+}
+
+#[test]
+fn ellipse_closest_on_a_circle_matches_the_simple_radial_formula() {
+    // ratio = 1 (a circle): the closest point is just the centre-to-p direction at radius a —
+    // an independent, trivial-to-verify special case.
+    let e = Ellipse::full(Vec2::new(5.0, -2.0), Vec2::new(3.0, 0.0), 1.0);
+    let p = Vec2::new(20.0, 10.0);
+    let want = e.center + (p - e.center).normalized() * 3.0;
+    assert!(e.closest(p).near(want, 1e-9), "{:?} vs {want:?}", e.closest(p));
+}
+
+#[test]
+fn elliptical_arc_closest_falls_back_to_an_endpoint_outside_the_sweep() {
+    // A quarter ellipse (0..90 deg): a point whose unconstrained nearest point would be on the
+    // trimmed-away part must snap to whichever endpoint is nearer, exactly like Arc::closest.
+    let e = Ellipse { center: Vec2::ZERO, major: Vec2::new(10.0, 0.0), ratio: 0.5, start: 0.0, end: PI / 2.0 };
+    // Near the (-10, 0) end of the full ellipse, well outside the 0..90 deg sweep.
+    let p = Vec2::new(-11.0, 0.1);
+    let c = e.closest(p);
+    let (s, end) = (e.at_param(0.0), e.at_param(PI / 2.0));
+    assert!(c.near(s, 1e-9) || c.near(end, 1e-9), "{c:?} should be an endpoint ({s:?} or {end:?})");
+}
+
+#[test]
 fn segment_offset() {
     let s = Segment::Arc { arc: Arc::new(Vec2::ZERO, 5.0, 0.0, PI), ccw: true };
     let o = s.offset(1.0).unwrap();

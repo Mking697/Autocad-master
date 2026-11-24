@@ -281,10 +281,62 @@ impl Ellipse {
         let mb = ma * self.ratio;
         norm_angle((y / mb.max(EPS)).atan2(x / ma))
     }
+    /// Closest point on the ellipse (or elliptical arc) to `p`. Exact, not tessellated: Newton's
+    /// method on the parametric angle refines `param_of`'s already-good initial guess to the
+    /// root of the squared-distance derivative (quadratic convergence, a handful of iterations
+    /// reach machine precision). A trimmed arc also checks its two endpoints, like [`Arc::closest`].
+    /// Falls back to the old tessellated search (never panics, never regresses) if Newton
+    /// doesn't land at least as close as it did, which only happens in genuinely degenerate
+    /// cases (e.g. `p` at the ellipse's centre on a near-circular ellipse, where several points
+    /// are equally nearest and the starting guess's quadrant is ambiguous).
     pub fn closest(&self, p: Vec2) -> Vec2 {
+        let newton = self.closest_exact(p);
         let mut pts = Vec::new();
         self.tessellate(self.major.len() * 1e-3, &mut pts);
-        nearest_on_polyline(&pts, p).unwrap_or(self.center)
+        let tessellated = nearest_on_polyline(&pts, p).unwrap_or(self.center);
+        if newton.is_finite() && newton.dist(p) <= tessellated.dist(p) + EPS { newton } else { tessellated }
+    }
+
+    /// The Newton-refined closest point on the full ellipse's parametric curve, trimmed to this
+    /// arc's sweep (comparing the two endpoints when the unconstrained minimum falls outside it).
+    fn closest_exact(&self, p: Vec2) -> Vec2 {
+        let a = self.major.len();
+        if !(a.is_finite() && a > EPS) {
+            return self.center;
+        }
+        let b = a * self.ratio;
+        let u = self.major / a;
+        let v = u.perp();
+        let local = p - self.center;
+        let (x, y) = (local.dot(u), local.dot(v));
+        // Root of f(t) minimizes |at_param(t) - p|^2 (derivative of the squared distance, see
+        // module tests for the derivation): (b^2-a^2) sin t cos t + a x sin t - b y cos t = 0.
+        let f = |t: f64| (b * b - a * a) * t.sin() * t.cos() + a * x * t.sin() - b * y * t.cos();
+        let fp = |t: f64| (b * b - a * a) * (t.cos() * t.cos() - t.sin() * t.sin()) + a * x * t.cos() + b * y * t.sin();
+        let mut t = self.param_of(p);
+        for _ in 0..12 {
+            let d = fp(t);
+            if !(d.is_finite() && d.abs() > 1e-14) {
+                break;
+            }
+            let step = f(t) / d;
+            if !step.is_finite() {
+                break;
+            }
+            t -= step;
+            if !t.is_finite() {
+                return Vec2::new(f64::NAN, f64::NAN);
+            }
+        }
+        if self.is_full() {
+            return self.at_param(t);
+        }
+        if angle_in_sweep(norm_angle(t), self.start, self.end) {
+            self.at_param(t)
+        } else {
+            let (s, e) = (self.at_param(self.start), self.at_param(self.end));
+            if s.dist(p) <= e.dist(p) { s } else { e }
+        }
     }
 }
 
