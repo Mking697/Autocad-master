@@ -32,6 +32,7 @@ pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value,
         "style" | "st" => "textstyle",
         "tablestyle" | "ts" => "tablestyle",
         "mleaderstyle" | "mls" => "mleaderstyle",
+        "dimstyle" | "d" | "dst" | "ddim" => "dimstyle",
         "pagesetup" => "pagesetup",
         "constraintsettings" | "csettings" => "csettings",
         "plot" | "print" => {
@@ -53,6 +54,7 @@ pub fn dialog(app: &mut CadApp, ctx: &egui::Context, name: &str, open: &mut bool
         "textstyle" => text_style(app, ctx, open),
         "tablestyle" => table_style(app, ctx, open),
         "mleaderstyle" => mleader_style(app, ctx, open),
+        "dimstyle" => dimstyle(app, ctx, open),
         "pagesetup" => page_setup(app, ctx, open),
         "csettings" => constraint_settings(app, ctx, open),
         "matchprop" => matchprop::dialog(app, ctx, open),
@@ -400,6 +402,96 @@ fn mleader_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Acti
     style_manager(ctx, open, "Multileader Style", "mleaderstyle", &current, &styles)
 }
 
+/// Numeric (incl. 0/255 small-integer) field, label, DimStyle field accessor.
+type DimField = (&'static str, &'static str, fn(&cadcraft_doc::DimStyle) -> f64);
+/// Fields shown as plain numbers: covers most of DimStyle's variables, but not colours, block/
+/// linetype names or lineweights (those need pickers this dialog doesn't have yet, see F7 in
+/// docs/gaps.md) — so this isn't yet AutoCAD's full 7-tab Lines/Symbols/Text/Fit/Primary/
+/// Alternate/Tolerances layout, just one flat field list reusing the existing style manager.
+const DIM_NUM_FIELDS: &[DimField] = &[
+    ("scale", "Overall scale (DIMSCALE)", |s| s.scale),
+    ("arrowSize", "Arrowhead size", |s| s.arrow_size),
+    ("extOffset", "Extension line offset from origin", |s| s.ext_offset),
+    ("extExtend", "Extension line extend beyond dim line", |s| s.ext_extend),
+    ("textHeight", "Text height", |s| s.text_height),
+    ("textGap", "Text gap", |s| s.text_gap),
+    ("decimals", "Decimal places", |s| f64::from(s.decimals)),
+    ("angularDecimals", "Angular decimal places (-1 = match linear)", |s| f64::from(s.angular_decimals)),
+    ("linearFactor", "Linear scale factor (DIMLFAC)", |s| s.linear_factor),
+    ("textAbove", "Text position (0 centred, 1 above)", |s| f64::from(s.text_above)),
+    ("tickSize", "Tick size (0 = arrowheads)", |s| s.tick_size),
+    ("centerMark", "Centre mark size (negative = lines)", |s| s.center_mark),
+    ("zeroSuppression", "Zero suppression bits (DIMZIN)", |s| f64::from(s.zero_suppression)),
+    ("linearUnit", "Linear unit format (1 sci…6 Windows)", |s| f64::from(s.linear_unit)),
+    ("tolPlus", "Tolerance plus", |s| s.tol_plus),
+    ("tolMinus", "Tolerance minus", |s| s.tol_minus),
+    ("baselineSpacing", "Baseline spacing", |s| s.baseline_spacing),
+    ("dimLineExtend", "Dimension line extension", |s| s.dim_line_extend),
+    ("textJust", "Text justification (DIMJUST)", |s| f64::from(s.text_just)),
+    ("round", "Rounding increment (0 = none)", |s| s.round),
+    ("fractionFormat", "Fraction format (0 horiz, 1 diag, 2 none)", |s| f64::from(s.fraction_format)),
+    ("tolDecimals", "Tolerance decimal places", |s| f64::from(s.tol_decimals)),
+    ("tolScale", "Tolerance text height factor", |s| s.tol_scale),
+    ("tolZeroSuppression", "Tolerance zero suppression", |s| f64::from(s.tol_zero_suppression)),
+    ("altTolDecimals", "Alternate tolerance decimal places", |s| f64::from(s.alt_tol_decimals)),
+    ("altTolZeroSuppression", "Alternate tolerance zero suppression", |s| f64::from(s.alt_tol_zero_suppression)),
+    ("altFactor", "Alternate units factor", |s| s.alt_factor),
+    ("altDecimals", "Alternate units decimal places", |s| f64::from(s.alt_decimals)),
+    ("altRound", "Alternate units rounding (0 = none)", |s| s.alt_round),
+    ("altUnit", "Alternate unit format", |s| f64::from(s.alt_unit)),
+    ("altZeroSuppression", "Alternate units zero suppression", |s| f64::from(s.alt_zero_suppression)),
+    ("angularUnit", "Angular unit format (0 dec…3 radians)", |s| f64::from(s.angular_unit)),
+    ("fit", "What moves outside ext lines (DIMATFIT)", |s| f64::from(s.fit)),
+    ("textVerticalPos", "Text vertical position (text heights)", |s| s.text_vertical_pos),
+    ("tolJust", "Tolerance vertical place (0 bottom…2 top)", |s| f64::from(s.tol_just)),
+    ("angularZeroSuppression", "Angular zero suppression bits", |s| f64::from(s.angular_zero_suppression)),
+    ("arcSymbol", "Arc length symbol (0 before, 1 above, 2 none)", |s| f64::from(s.arc_symbol)),
+    ("fixedExtLength", "Fixed extension line length", |s| s.fixed_ext_length),
+    ("jogAngle", "Jog angle (degrees, radius jog dimensions)", |s| s.jog_angle),
+];
+/// Boolean fields shown as checkboxes.
+const DIM_BOOL_FIELDS: &[(&str, &str, fn(&cadcraft_doc::DimStyle) -> bool)] = &[
+    ("textInsideHorizontal", "Text inside extension lines horizontal", |s| s.text_inside_horizontal),
+    ("textOutsideHorizontal", "Text outside extension lines horizontal", |s| s.text_outside_horizontal),
+    ("tolerance", "Show tolerances", |s| s.tolerance),
+    ("limits", "Show limits instead of the measurement", |s| s.limits),
+    ("annotative", "Annotative", |s| s.annotative),
+    ("suppressExt1", "Suppress extension line 1", |s| s.suppress_ext1),
+    ("suppressExt2", "Suppress extension line 2", |s| s.suppress_ext2),
+    ("suppressDim1", "Suppress dimension line 1 and its arrow", |s| s.suppress_dim1),
+    ("suppressDim2", "Suppress dimension line 2 and its arrow", |s| s.suppress_dim2),
+    ("textInside", "Text always between extension lines", |s| s.text_inside),
+    ("suppressOutsideArrows", "Suppress arrowheads that don't fit inside", |s| s.suppress_outside_arrows),
+    ("forceLineInside", "Dimension line forced between extension lines", |s| s.force_line_inside),
+    ("userPositionedText", "Cursor positions text during creation", |s| s.user_positioned_text),
+    ("fixedExt", "Fixed-length extension lines", |s| s.fixed_ext),
+    ("alt", "Show alternate units", |s| s.alt),
+];
+
+fn dimstyle(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
+    let Ok(d) = app.session.doc() else {
+        no_drawing(ctx, "Dimension Style Manager", open);
+        return None;
+    };
+    let text_styles: Vec<String> = d.text_styles.iter().map(|s| s.name.clone()).collect();
+    let mut styles: Vec<Style> = d
+        .dim_styles
+        .iter()
+        .map(|s| {
+            let mut fields: Vec<Field> = DIM_NUM_FIELDS.iter().map(|(key, label, get)| Field::Num(key, label, get(s))).collect();
+            fields.push(Field::Choice("textStyle", "Text style", s.text_style.clone(), text_styles.clone()));
+            fields.extend(DIM_BOOL_FIELDS.iter().map(|(key, label, get)| Field::Bool(key, label, get(s))));
+            Style { name: s.name.clone(), fields }
+        })
+        .collect();
+    if styles.is_empty() {
+        let s = cadcraft_doc::DimStyle::default();
+        styles.push(Style { name: s.name, fields: Vec::new() });
+    }
+    let current = d.header.str("DIMSTYLE", "Standard");
+    style_manager(ctx, open, "Dimension Style Manager", "dimstyle", &current, &styles)
+}
+
 /// A style list (set current, new) beside the selected style's properties. `cmd` takes
 /// `{name, <field>: value, current?}`.
 fn style_manager(ctx: &egui::Context, open: &mut bool, title: &str, cmd: &'static str, current: &str, styles: &[Style]) -> Action {
@@ -441,53 +533,59 @@ fn style_manager(ctx: &egui::Context, open: &mut bool, title: &str, cmd: &'stati
             });
             right.label(RichText::new(format!("Properties of {sel}")).strong());
             let Some(style) = styles.iter().find(|s| s.name == sel) else { return };
-            egui::Grid::new((cmd, "props")).num_columns(2).spacing(vec2(10.0, 6.0)).show(right, |ui| {
-                for f in &style.fields {
-                    let change = match f {
-                        Field::Num(key, label, v) => {
-                            let field_label = ui.label(*label);
-                            num_field(ui, (cmd, &style.name, *key), *v, Some(field_label.id)).filter(|v| *v >= 0.0).map(|v| (*key, json!(v)))
-                        }
-                        Field::Bool(key, label, v) => {
-                            ui.label("");
-                            let mut b = *v;
-                            ui.checkbox(&mut b, *label).changed().then(|| (*key, json!(b)))
-                        }
-                        Field::Choice(key, label, v, choices) => {
-                            ui.label(*label);
-                            let mut picked = None;
-                            egui::ComboBox::from_id_salt((cmd, *key)).selected_text(v.as_str()).show_ui(ui, |ui| {
-                                for c in choices {
-                                    if ui.selectable_label(c == v, c).clicked() && c != v {
-                                        picked = Some(c.clone());
+            egui::ScrollArea::vertical().id_salt((cmd, "props_scroll")).max_height(400.0).auto_shrink([false, true]).show(right, |ui| {
+                egui::Grid::new((cmd, "props")).num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
+                    for f in &style.fields {
+                        let change = match f {
+                            Field::Num(key, label, v) => {
+                                // Not clamped to >= 0 here: some fields are meaningfully negative
+                                // (DimStyle's centre mark size, angular decimals' -1 sentinel, text
+                                // vertical position) and the engine's own command validates range
+                                // per field anyway (reported on the command line if rejected).
+                                let field_label = ui.label(*label);
+                                num_field(ui, (cmd, &style.name, *key), *v, Some(field_label.id)).map(|v| (*key, json!(v)))
+                            }
+                            Field::Bool(key, label, v) => {
+                                ui.label("");
+                                let mut b = *v;
+                                ui.checkbox(&mut b, *label).changed().then(|| (*key, json!(b)))
+                            }
+                            Field::Choice(key, label, v, choices) => {
+                                ui.label(*label);
+                                let mut picked = None;
+                                egui::ComboBox::from_id_salt((cmd, *key)).selected_text(v.as_str()).show_ui(ui, |ui| {
+                                    for c in choices {
+                                        if ui.selectable_label(c == v, c).clicked() && c != v {
+                                            picked = Some(c.clone());
+                                        }
                                     }
-                                }
-                            });
-                            picked.map(|c| (*key, json!(c)))
-                        }
-                        Field::BlockChoice(key, label, v, choices) => {
-                            const NONE_LABEL: &str = "(MText)";
-                            ui.label(*label);
-                            let shown = v.as_deref().unwrap_or(NONE_LABEL);
-                            let mut picked = None;
-                            egui::ComboBox::from_id_salt((cmd, *key)).selected_text(shown).show_ui(ui, |ui| {
-                                if ui.selectable_label(v.is_none(), NONE_LABEL).clicked() && v.is_some() {
-                                    picked = Some(None);
-                                }
-                                for c in choices {
-                                    if ui.selectable_label(v.as_deref() == Some(c.as_str()), c).clicked() && v.as_deref() != Some(c.as_str()) {
-                                        picked = Some(Some(c.clone()));
+                                });
+                                picked.map(|c| (*key, json!(c)))
+                            }
+                            Field::BlockChoice(key, label, v, choices) => {
+                                const NONE_LABEL: &str = "(MText)";
+                                ui.label(*label);
+                                let shown = v.as_deref().unwrap_or(NONE_LABEL);
+                                let mut picked = None;
+                                egui::ComboBox::from_id_salt((cmd, *key)).selected_text(shown).show_ui(ui, |ui| {
+                                    if ui.selectable_label(v.is_none(), NONE_LABEL).clicked() && v.is_some() {
+                                        picked = Some(None);
                                     }
-                                }
-                            });
-                            picked.map(|c| (*key, c.map_or(Value::Null, |c| json!(c))))
+                                    for c in choices {
+                                        if ui.selectable_label(v.as_deref() == Some(c.as_str()), c).clicked() && v.as_deref() != Some(c.as_str()) {
+                                            picked = Some(Some(c.clone()));
+                                        }
+                                    }
+                                });
+                                picked.map(|c| (*key, c.map_or(Value::Null, |c| json!(c))))
+                            }
+                        };
+                        if let Some((key, v)) = change {
+                            action = Some((cmd, json!({ "name": style.name, key: v, "current": false })));
                         }
-                    };
-                    if let Some((key, v)) = change {
-                        action = Some((cmd, json!({ "name": style.name, key: v, "current": false })));
+                        ui.end_row();
                     }
-                    ui.end_row();
-                }
+                });
             });
         });
     });
@@ -1325,6 +1423,36 @@ mod mleaderstyle_dialog_tests {
         assert!(st.annotative && st.block_center);
         assert_eq!(st.block_scale, 2.0);
         ctx.run_ui(egui::RawInput::default(), |ui| dialog(&mut app, ui.ctx(), "mleaderstyle", &mut open)).drop_without_applying_deltas();
+        assert!(open);
+    }
+}
+
+#[cfg(test)]
+mod dimstyle_dialog_tests {
+    use super::*;
+    use cadcraft_engine::Session;
+
+    /// DIMSTYLE had no manager dialog at all before this (typed bare `dimstyle` just errored
+    /// "`name` is required" — no route() entry opened a dialog, unlike every other style
+    /// command). This renders the new dialog, with all of `DIM_NUM_FIELDS`/`DIM_BOOL_FIELDS`
+    /// present, and round-trips a representative field of each kind through the real
+    /// `dimstyle` command (not a dialog-local copy): a negative-valued field (centre mark,
+    /// confirming the `>= 0` clamp was correctly widened) and a boolean.
+    #[test]
+    fn dialog_opens_and_round_trips_fields_through_the_real_command() {
+        let mut app = CadApp::new(Session::new(), crate::Services::default());
+        route(&mut app, "dimstyle", &Value::Null).unwrap().unwrap();
+        assert_eq!(app.ui.dialog.as_deref(), Some("dimstyle"));
+        let ctx = egui::Context::default();
+        let mut open = true;
+        ctx.run_ui(egui::RawInput::default(), |ui| dialog(&mut app, ui.ctx(), "dimstyle", &mut open)).drop_without_applying_deltas();
+        assert!(open);
+
+        app.run("dimstyle", json!({"name": "Standard", "centerMark": -2.5, "tolerance": true, "current": false})).unwrap();
+        let st = app.session.doc().unwrap().dim_styles.iter().find(|s| s.name == "Standard").cloned().unwrap();
+        assert_eq!(st.center_mark, -2.5, "negative centre-mark (lines) must reach the style");
+        assert!(st.tolerance);
+        ctx.run_ui(egui::RawInput::default(), |ui| dialog(&mut app, ui.ctx(), "dimstyle", &mut open)).drop_without_applying_deltas();
         assert!(open);
     }
 }
