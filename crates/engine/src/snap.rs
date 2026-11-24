@@ -324,6 +324,25 @@ fn osnap_in_with_prims(
         let real = if osmode & mode::INT != 0 { mode::INT } else { mode::APP };
         for i in 0..segs.len() {
             for j in i + 1..segs.len() {
+                // Use the actual curve for finite line/ellipse pairs, never their chords:
+                // an approximate candidate can otherwise beat the true hit by cursor distance.
+                let ellipse_line = match (near_prims.get(i), near_prims.get(j)) {
+                    (Some(Prim::Ellipse(e)), Some(Prim::Seg(Segment::Line(l)))) | (Some(Prim::Seg(Segment::Line(l))), Some(Prim::Ellipse(e))) => {
+                        Some((e, l))
+                    }
+                    _ => None,
+                };
+                // Additive: also offer the exact crossing alongside the chord-based ones
+                // below (which keep their own tolerance for a near-miss cursor, e.g. a point
+                // slightly outside a tessellated ellipse by rounding) so cursor-distance ranking
+                // can prefer the true point when it's actually the nearer one.
+                if let Some((ellipse, line)) = ellipse_line {
+                    for (point, t) in cadcraft_geom::line_ellipse(line, ellipse) {
+                        if (-1e-9..=1.0 + 1e-9).contains(&t) && point.is_finite() && point.dist(cursor) <= aperture {
+                            cands.push((real, point));
+                        }
+                    }
+                }
                 // Extending a tessellated ellipse or spline chord means nothing.
                 let extend = osmode & mode::APP != 0 && [i, j].iter().all(|k| near_prims.get(*k).is_some_and(extendable));
                 for a in segs.get(i).into_iter().flatten() {
@@ -1118,6 +1137,60 @@ mod tests {
         let h = osnap(&d, &Space::Model, Vec2::new(5.2, 0.2), 0.5, mode::INT, None, false).unwrap();
         assert!(h.point.near(Vec2::new(5.0, 0.0), 1e-9));
         assert_eq!(h.name, "Intersection");
+    }
+
+    fn ellipse_line_drawing(a: Vec2, b: Vec2, start: f64, end: f64, line_first: bool) -> Drawing {
+        let mut d = Drawing::new_imperial();
+        let ellipse = EntityKind::Ellipse(cadcraft_doc::Ellipse { center: Vec3::ZERO, major: Vec3::new(10.0, 0.0, 0.0), ratio: 0.5, start, end });
+        let line = EntityKind::Line(cadcraft_doc::Line { a: Vec3::new(a.x, a.y, 0.0), b: Vec3::new(b.x, b.y, 0.0) });
+        let kinds = if line_first { [line, ellipse] } else { [ellipse, line] };
+        for kind in kinds {
+            d.add(&Space::Model, Common::default(), kind).unwrap();
+        }
+        d
+    }
+
+    #[test]
+    fn ellipse_line_snap_ranks_the_true_crossing_over_a_chord_approximation() {
+        // Major 10, ratio 0.5: x^2/100 + y^2/25 = 1 crosses y=3 at x = +/-8 exactly.
+        for line_first in [false, true] {
+            let d = ellipse_line_drawing(Vec2::new(-12.0, 3.0), Vec2::new(12.0, 3.0), 0.0, 2.0 * PI, line_first);
+            for mask in [mode::INT, mode::APP, mode::INT | mode::APP] {
+                for sign in [-1.0, 1.0] {
+                    // Cursor exactly at the true crossing: its distance beats any tessellated
+                    // chord's approximate candidate, so ranking must return the true point, not
+                    // a nearby chord point.
+                    let exact = Vec2::new(sign * 8.0, 3.0);
+                    let hit = osnap(&d, &Space::Model, exact, 0.5, mask, None, false).unwrap();
+                    assert!(hit.point.near(exact, 1e-9), "{hit:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ellipse_line_snap_respects_segment_and_arc_limits() {
+        for mask in [mode::INT, mode::APP, mode::INT | mode::APP] {
+            // Well short of the ellipse (not just by a rounding-sized gap): the real segment
+            // cannot cross it, regardless of tessellation.
+            let short = ellipse_line_drawing(Vec2::new(0.0, 3.0), Vec2::new(7.0, 3.0), 0.0, 2.0 * PI, false);
+            assert!(osnap(&short, &Space::Model, Vec2::new(8.0, 3.0), 0.1, mask, None, false).is_none());
+            let arc = ellipse_line_drawing(Vec2::new(-12.0, 3.0), Vec2::new(12.0, 3.0), PI / 2.0, 1.5 * PI, false);
+            assert!(osnap(&arc, &Space::Model, Vec2::new(8.0, 3.0), 0.1, mask, None, false).is_none());
+            let hit = osnap(&arc, &Space::Model, Vec2::new(-8.0, 3.0), 0.1, mask, None, false).unwrap();
+            assert!(hit.point.near(Vec2::new(-8.0, 3.0), 1e-9));
+        }
+    }
+
+    #[test]
+    fn ellipse_line_snap_finds_tangency_and_segment_endpoint() {
+        for (a, b, expected) in
+            [(Vec2::new(-12.0, 5.0), Vec2::new(12.0, 5.0), Vec2::new(0.0, 5.0)), (Vec2::new(0.0, 3.0), Vec2::new(8.0, 3.0), Vec2::new(8.0, 3.0))]
+        {
+            let d = ellipse_line_drawing(a, b, 0.0, 2.0 * PI, false);
+            let hit = osnap(&d, &Space::Model, expected, 0.1, mode::INT, None, false).unwrap();
+            assert!(hit.point.near(expected, 1e-9), "{hit:?}");
+        }
     }
 
     #[test]

@@ -148,21 +148,20 @@ a phase is fine.
       preserving its parameter exactly, so `line_circle` on the transformed pair gives the roots
       directly; each hit's local angle IS the ellipse's own parameter, so trimming to a partial
       arc's sweep needs no re-derivation. 3 new tests (an analytic axis-aligned case, a tangent,
-      an arc-sweep filter). Not yet wired into any command (INTERSECT, snap's `prim_segments`,
-      TRIM/EXTEND's cutting-edge search still tessellate) — this session's slice was the pure,
-      tested geometry function only, kept separate from wiring it into a consumer since that's
-      a larger, riskier change with several call sites to re-verify one at a time. Landed
-      2026-11-24: `Ellipse::closest` is now also wired into OSNAP's NEA (nearest) snap
-      (`crates/engine/src/snap.rs`) alongside the tessellated-segment candidates it already
-      considered — one new test (`nearest_on_an_ellipse_is_exact`) checks the hit lands on the
-      ellipse to within `1e-9`, not a tessellation chord's tolerance. `line_ellipse` is still not
-      wired anywhere (OSNAP's INT/APP intersection logic is a pervasive segment×segment loop over
-      every primitive pair — restructuring it to special-case an unTessellated ellipse side is a
-      separate, larger, independently-risky change, not done this session). Still a real,
-      substantial gap: ellipse/spline offset curves (an ellipse's offset is not itself an
-      ellipse — a genuinely harder curve to represent exactly), ellipse∩circle/ellipse∩ellipse
-      and any spline intersection, and wiring `line_ellipse` into OSNAP's INT/APP, INTERSECT and
-      TRIM/EXTEND (which still tessellate)
+      an arc-sweep filter). Consumer wiring, 2026-11-24: OSNAP INT/APP now uses
+      `line_ellipse` for finite line-segment/ellipse pairs in either drawing order, filtering
+      the line parameter to its finite extent and retaining the ellipse's arc sweep. These
+      pairs bypass chord intersections entirely so a closer approximate candidate cannot beat
+      the actual crossing. Regression coverage includes both roots, INT/APP/combined modes,
+      finite-segment limits, trimmed arcs, tangency and an endpoint crossing. Other primitive
+      pair types still use the existing path; rays/xlines, INTERSECT and TRIM/EXTEND remain
+      unwired. The experimental sampled ellipse-circle solver was removed, not shipped: a
+      sign-change-only search is not a complete intersection solver (tangencies/close roots).
+      `Ellipse::closest` is also wired into OSNAP NEA (`73547530`), but the additive NEA
+      candidate path and the geometry routine's tessellated fallback still need review before
+      claiming every returned hit lies on the actual ellipse. The original NEA regression
+      covers one exterior cursor only. Still open: ellipse/spline offsets, ellipse-circle,
+      ellipse-ellipse and spline intersections, and the remaining consumer wiring.
 - [ ] Top-10 #4 / F3 **[alpha blocker]**: dynamic-block authoring (parameters and actions in the
       Block Editor) — references/editing already work, only authoring is missing
 - [x] FF6 **[found already done]**: DWG throughput's UI-freeze half already fixed (background
