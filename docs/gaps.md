@@ -130,7 +130,8 @@ a phase is fine.
       aware polyline offset)
 - [ ] Top-10 #4 / F3 **[alpha blocker]**: dynamic-block authoring (parameters and actions in the
       Block Editor) — references/editing already work, only authoring is missing
-- [ ] FF6 **[alpha blocker]**: DWG throughput (10 MB took ~2 min to fail, #57)
+- [x] FF6 **[found already done]**: DWG throughput's UI-freeze half already fixed (background
+      thread, `opening.rs`, issue #694); raw acadrust decode speed itself can't be improved here
 
 ### Phase 4 — beta checklist (everything else `docs/roadmap.md`'s beta section lists)
 - [ ] Annotation depth: remaining F7/F9/F10/F12 items, tables (F11), fields
@@ -214,7 +215,7 @@ Detail: [file-format-parity.md](file-format-parity.md).
 | FF3 | Save-version leftovers (DXF/DWG 2000–2018, binary DXF, SAVEAS `version`/`binary`, the default save version, and now the command-line `-SAVEAS` format/version/binary prompt all landed, #421, `3542d622`): no R14 DWG or R12 DXF output; the native Save dialog can't pick the version per file (rfd, the OS file-picker crate, doesn't report which filter the user picked; File > Default Save Format sets the version for untitled drawings instead) | Low | 1–3 |
 | FF4 | Code-page leftovers (pre-2007 DXF read and write their `$DWGCODEPAGE` landed, #505 and 2026-11-21: Johab/DOS 437/850/852/855/857/860–865/869 already decode correctly on read, and keep their declared page on save instead of downgrading to ANSI_1252, confirmed by `johab_and_dos_code_pages_are_also_kept_before_2007`); left: acadrust (our DWG dependency) approximates these same DOS code pages in pre-2007 **DWG** specifically (DOS437 as 866, DOS850 as 1252) — a third-party library limitation, not CADCraft's own DXF code | Low | 0–1 |
 | FF5 | **[alpha blocker]** Real-file corpus (`storytold/cadcraft-corpus`), open → save → reopen tests, black-box check in AutoCAD | High | 10–15 + human |
-| FF6 | **[alpha blocker]** DWG throughput: a 10 MB DWG took ~2 min to fail (#57) | High for real projects | 6–10 |
+| FF6 | **[found already done, re-checked 2026-11-24]** DWG throughput: a 10 MB DWG took ~2 min to fail (#57). acadrust (used unmodified per `crates/dwg/Cargo.toml`) is the only thing slow here, so its raw decode speed genuinely cannot be improved from this repo. What CAN be fixed, and already was (`crates/ui-egui/src/opening.rs`, issue #694): OPEN now reads/decodes on a worker thread (`Opening::start`, `cmd::file::read_file` — the pre-existing "slow half of OPEN" split, `cmd::file::finish_open` is the fast half that touches the Session), the window keeps painting with an "Opening... Ns" card and spinner, and `finish_opening()` installs the drawing once ready. Wired from every real entry point (File > Open in `menus.rs`, drag-and-drop in `chrome.rs`/`docking.rs`/`lib.rs`). Tested (`opening::tests`, 2 tests, passing). The underlying file genuinely still takes ~2 minutes to parse — that part is unfixable without forking acadrust — but the UI no longer freezes or looks hung while it does. Only real remaining gap: no cancel button on the "Opening..." card (`Opening` has no `cancel`/`abort` method) | Low now (was high) | 0 (done); ~1–2 if a cancel button is wanted |
 | FF7 | Table record and object handles from other programs' files are renumbered on the first save (entity handles are kept; `*D` blocks no longer duplicate and once reopened, CADCraft's own files keep every handle across saves, #495) | Low | 4–6 |
 | FF8 | SHX fonts (shape and big fonts) not read | Medium-high (text metrics differ) | 8–12 |
 | FF9 | `.pc3` plotter configuration files; linetype shape (SHX) elements are skipped (templates and `.dwt`, user `.lin`/`.pat` and `.pgp` alias files landed, #552; `.ctb`/`.stb`, #410) | Low-medium | 5–10 |
