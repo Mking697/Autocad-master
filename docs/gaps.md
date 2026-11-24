@@ -155,13 +155,26 @@ a phase is fine.
       the actual crossing. Regression coverage includes both roots, INT/APP/combined modes,
       finite-segment limits, trimmed arcs, tangency and an endpoint crossing. Other primitive
       pair types still use the existing path; rays/xlines, INTERSECT and TRIM/EXTEND remain
-      unwired. The experimental sampled ellipse-circle solver was removed, not shipped: a
-      sign-change-only search is not a complete intersection solver (tangencies/close roots).
-      `Ellipse::closest` is also wired into OSNAP NEA (`73547530`), but the additive NEA
-      candidate path and the geometry routine's tessellated fallback still need review before
-      claiming every returned hit lies on the actual ellipse. The original NEA regression
-      covers one exterior cursor only. Still open: ellipse/spline offsets, ellipse-circle,
-      ellipse-ellipse and spline intersections, and the remaining consumer wiring.
+      unwired at the time, now also closed for TRIM/EXTEND, 2026-11-24: trim()/extend()
+      (`crates/engine/src/cmd/modify.rs`) use `line_ellipse` exactly for a LINE trimmed or
+      extended across an ELLIPSE cutting edge. Unlike OSNAP's wiring, this one EXCLUDES the
+      chord candidates for that specific pair rather than adding the exact one alongside them
+      (`edge_segments_ex(..., skip_ellipses)`) -- trim/extend's own selection picks whichever
+      candidate is numerically closest to the pick/ray (not cursor-distance ranked like OSNAP),
+      so an additive merge let a near-duplicate chord approximation beat the exact value; a
+      failing test caught this before it shipped. Also discovered, already fine, not changed:
+      trimming/extending an ELLIPSE object itself against a LINE/ARC cutting edge
+      (`modify2.rs`'s `hits_on`/`refine_hit`) was already effectively exact via bisection
+      against the real curve and the cutting edge's exact `side_of()`. Still chord-only: an
+      ellipse cutting edge against a trimmed ARC/CIRCLE, and any pair where both objects are
+      curves (ellipse∩ellipse, spline∩anything). The experimental sampled ellipse-circle solver
+      was removed, not shipped: a sign-change-only search is not a complete intersection solver
+      (tangencies/close roots). `Ellipse::closest` is also wired into OSNAP NEA (`73547530`),
+      but the additive NEA candidate path and the geometry routine's tessellated fallback still
+      need review before claiming every returned hit lies on the actual ellipse. The original
+      NEA regression covers one exterior cursor only. Still open: ellipse/spline offsets,
+      ellipse-circle, ellipse-ellipse and spline intersections, and the remaining consumer
+      wiring (rays/xlines, INTERSECT, ARC/CIRCLE-trimmed-by-ellipse, any curve∩curve pair).
 - [ ] Top-10 #4 / F3 **[alpha blocker]**: dynamic-block authoring (parameters and actions in the
       Block Editor) — references/editing already work, only authoring is missing
 - [x] FF6 **[found already done]**: DWG throughput's UI-freeze half already fixed (background
