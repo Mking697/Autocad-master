@@ -580,6 +580,7 @@ dependencies = [
  "log",
  "muda",
  "objc2-app-kit 0.3.2",
+ "pollster 0.4.0",
  "rfd",
  "serde_json",
  "sys-locale",
