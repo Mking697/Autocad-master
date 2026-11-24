@@ -432,6 +432,19 @@ impl CadApp {
             if !first.is_empty() && !json_form && menus::run_ui_command(self, &first.to_ascii_lowercase(), &Value::Null).is_some() {
                 return None;
             }
+        } else if self.session.running.as_ref().is_some_and(|r| r.id == "matchprop")
+            && self.session.current_prompt().is_some_and(|p| p.match_keyword(text).as_deref() == Some("Settings"))
+        {
+            // Typed MATCHPROP's own Settings keyword: AutoCAD opens the Match Properties
+            // Settings dialog here instead of a text keyword-toggle loop (the engine still
+            // offers that loop for scripts/JSON callers; this only intercepts the interactive
+            // command line). The running command's own prompt stage is left untouched (stays
+            // at "Select destination object(s)"), matching `matchprop_dialog_dispatch_does_not_
+            // start_or_replace_the_running_command`'s existing guarantee that the dialog never
+            // disturbs the running machine.
+            self.session.echo("Settings");
+            self.ui.dialog = Some("matchprop".into());
+            return None;
         }
         let e = self.session.cmdline(text).err()?.to_string();
         self.session.echo(e.clone());
@@ -957,6 +970,26 @@ mod tests {
 
     fn app() -> CadApp {
         CadApp::new(Session::empty(), Services::default())
+    }
+
+    /// Typing MATCHPROP's "Settings" keyword at the destination prompt opens the real dialog
+    /// (matching AutoCAD) instead of the engine's text-based keyword-toggle loop, and leaves the
+    /// running command exactly where it was.
+    #[test]
+    fn matchprop_settings_keyword_opens_the_dialog_not_the_text_loop() {
+        let mut app = CadApp::new(Session::new(), Services::default());
+        app.run("line", serde_json::json!({"points": [[0.0, 0.0], [10.0, 0.0]]})).unwrap();
+        let src = app.session.doc().unwrap().model.iter().next().unwrap().handle;
+        app.start("matchprop");
+        app.session.input(cadcraft_engine::Input::Pick(vec![src])).unwrap();
+        assert!(app.session.current_prompt().unwrap().message.starts_with("Select destination"));
+
+        assert_eq!(app.cmdline("Settings"), None);
+
+        assert_eq!(app.ui.dialog.as_deref(), Some("matchprop"));
+        // Still at the Dest prompt: the engine's own Settings keyword-toggle stage never ran.
+        assert!(app.session.current_prompt().unwrap().message.starts_with("Select destination"));
+        assert_eq!(app.session.running.as_ref().map(|r| r.id.as_str()), Some("matchprop"));
     }
 
     /// One real UI frame, with the OS reporting `system` as its appearance.

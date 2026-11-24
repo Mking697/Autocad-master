@@ -37,9 +37,9 @@ a phase is fine.
 - [x] F1 (colour books only): -LAYER/-ATTEDIT Colorbook keyword (`48cea109`)
 - [ ] F1 (remainder): -RENAME of materials — re-scope first: CADCraft has no material table at
       all, so this needs a minimal named-only table before RENAME can use it (bigger than 1–2h)
-- [x] F19 (part): standalone MATCHPROP Settings dialog — landed 2026-11-21 (`70b71ca4`). Still
-      open: material/shadow/centre-object settings, and intercepting the running command's own
-      "Settings" keyword (moved to Phase 2/low priority — see F19 row)
+- [x] F19 (part): standalone MATCHPROP Settings dialog — landed 2026-11-21 (`70b71ca4`); typing
+      the running command's own "Settings" keyword now opens that dialog too — landed 2026-11-24.
+      Still open: material/shadow/centre-object settings (see F19 row)
 - [x] F20 (part): autosave interval + default save version UI — checked 2026-11-21, already real
       (stale row). Still open: right-click per-context customization, AutoSnap magnet/tooltip
       toggles, drawing-area element colours, named profile import/export
@@ -51,7 +51,12 @@ a phase is fine.
       oversized input, malformed tag streams) that were missing at the crate level
 - [x] FF3 (part): command-line SAVEAS format prompt (-SAVEAS) — landed `3542d622`. Still open: no
       R14 DWG / R12 DXF output; the native OS Save dialog can't pick a version per file (rfd
-      doesn't report which filter the user picked; a custom in-app dialog would be needed)
+      doesn't report which filter the user picked; a custom in-app dialog would be needed). The
+      R14/R12 remainder re-checked 2026-11-24: confirmed a genuine new subsystem (version-gating
+      every entity/feature across the ~1800-line `io/src/dxf_write.rs`), not the hoped-for 1–2h
+      slice — not blocked by `acadrust` (DWG bridge only needs valid R2000+ DXF in; our own DXF
+      writer is what stops at R2000, see `dxf/src/version.rs`). Skipped this session per the
+      owner's direction; revisit as its own sized task, not a Phase 1 stub.
 - [x] FF4: Johab/DOS code pages on save — already worked (stale row; proved with a test, `e515d885`)
 - [x] U10: next SETVAR batch — 16 more variables landed 2026-11-21 (`c537966a`), 167→183 of
       ~1,000. Most of what's left is genuinely 3D-only (F24), so this item is low-priority to
@@ -139,7 +144,7 @@ a phase is fine.
 | F17 | Attributes (ATTSYNC, global -ATTEDIT, BATTMAN editing, DATAEXTRACTION/EATTEXT and Verify/Preset/Lock position modes landed, #433): multiline attributes (read, drawn and saved since 2026-10-12) can't be created or switched in BATTMAN; data extraction covers block references and attribute values (CSV or a table) only — no wizard, nested blocks, other objects' properties, `.dxe` templates or spreadsheet output | `cmd/blocks/battman.rs`, `cmd/blocks/extract.rs` | Low | 3–5 |
 | F20 | OPTIONS dialog done (#23): Display, Open and Save, Drafting, Selection, User Preferences and Profiles tabs, and the user profile (object snap modes, drafting toggles, Dynamic Input, PICKBOX, APERTURE, GRIPSIZE, CURSORSIZE, PICKFIRST, PICKADD, QPMODE, model and paper background, snap marker size, system cursor) survives restarts. The Open and Save tab's autosave interval, default save version and autosave file location rows, and the Preferences tab's time-sensitive right-click toggle, checked 2026-11-21 and already real (`options/dialog.rs`'s `autosave_row`/`save_version_row`/`savefile_row`/the Preferences tab) — the row was stale. Left: full right-click **customization** (per-context Default/Edit/Command behaviour, not just the one time-sensitive toggle), AutoSnap magnet and tooltip toggles, colours of the other drawing-area elements, named profiles with import and export | `ui-egui/src/options/` | Low | 1–2 |
 | F21 | MLINE, REGION and HELIX are objects since #510, with gaps: UNION/SUBTRACT/INTERSECT only combine regions whose boundaries don't meet; regions are saved as closed polylines (no ACIS data). MLEDIT tees now mitre to each element's own meeting point instead of a square cut (fixed 2026-10-27); PURGE already covers multiline styles (confirmed landed 2026-10-27, `purge_mlinestyles.rs`) | `draw2/mline.rs`, `inquiry/regions.rs`, `dxf_region.rs` | Low | 4–7 |
-| F19 | MATCHPROP has a standalone Settings dialog since 2026-11-21 (Modify menu, Home ribbon → Properties, Drafting menu; `matchprop.settings` command backs it, `ui-egui/src/managers/matchprop.rs`) for all 15 copyable properties plus Select all/Clear all; the running MATCHPROP command's own "Settings" keyword is still command-line text only (the dialog is opened separately, not from mid-command) and there's still no material, shadow or centre-object (associative CENTERMARK/CENTERLINE) setting (TEXTTOFRONT and HATCHTOBACK now act on every space, not just the current one, landed 2026-11-17; OVERKILL now compares polyline segments against other objects/segments too, landed 2026-10-27; picker and Settings, DRAWORDER Above/Under, TEXTTOFRONT, HATCHTOBACK, OVERKILL tolerance/ignore/overlap/end-to-end options landed, #439) | `props/matchprop.rs`, `ui-egui/src/managers/matchprop.rs`, `draworder.rs`, `overkill.rs` | Low | 1 |
+| F19 | MATCHPROP has a standalone Settings dialog since 2026-11-21 (Modify menu, Home ribbon → Properties, Drafting menu; `matchprop.settings` command backs it, `ui-egui/src/managers/matchprop.rs`) for all 15 copyable properties plus Select all/Clear all; typing the running MATCHPROP command's own "Settings" keyword now opens that same dialog mid-command too (2026-11-24, `ui-egui/src/lib.rs::cmdline`, intercepted before the engine's own text keyword-toggle loop runs — the loop itself stays for scripts/JSON/control-channel callers). Still no material, shadow or centre-object (associative CENTERMARK/CENTERLINE) setting (TEXTTOFRONT and HATCHTOBACK now act on every space, not just the current one, landed 2026-11-17; OVERKILL now compares polyline segments against other objects/segments too, landed 2026-10-27; picker and Settings, DRAWORDER Above/Under, TEXTTOFRONT, HATCHTOBACK, OVERKILL tolerance/ignore/overlap/end-to-end options landed, #439) | `props/matchprop.rs`, `ui-egui/src/managers/matchprop.rs`, `ui-egui/src/lib.rs`, `draworder.rs`, `overkill.rs` | Low | 1 |
 | F23 | No Sheet Set Manager, eTransmit, Share, Traces, Markup Import, Activity Insights | menu items uncovered | Low-medium (team workflows) | 40–70 |
 | F24 | No 3D: UCS, 3D views, orbit, solids, surfaces, meshes, sections, visual styles, materials, lights, rendering (150 menu items) | [parity-checklist](parity-checklist.md) | Medium (3D users) | 300–450 |
 
