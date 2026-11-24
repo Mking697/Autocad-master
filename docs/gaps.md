@@ -43,7 +43,7 @@ a phase is fine.
 - [x] F20 (part): autosave interval + default save version UI — checked 2026-11-21, already real
       (stale row). Still open: right-click per-context customization, AutoSnap magnet/tooltip
       toggles, drawing-area element colours, named profile import/export
-- [x] F4: re-verified 2026-11-24 (`<PENDING_SHA>`) — both sub-items were already closed by earlier
+- [x] F4: re-verified 2026-11-24 (`82fca28b`) — both sub-items were already closed by earlier
       commits, row was stale: DWG-vs-DXF autosave format is a deliberate, tested decision
       (`11e0107d`, `engine/src/autosave.rs::format_hint`/`write_file`), and RECOVER already has its
       own salvage reader strictly separate from OPEN (`fb756b06`, `io/src/recovery.rs`). Added
