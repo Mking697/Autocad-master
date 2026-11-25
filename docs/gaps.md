@@ -13,6 +13,60 @@ are Opus 5.5 agent-hours, calibrated as explained there. "Est." means a judgemen
 evidence. Rows marked **[alpha blocker]** are what fails the [alpha gate](roadmap.md#alpha-gate);
 do them first.
 
+## Owner priority order — 2026-11-25 (start here next session)
+
+Owner's stated goal: a user can draft a **complete 2D drawing end to end and save the file**,
+with everything behaving as close to real AutoCAD as possible. Owner set this explicit priority
+order for upcoming sessions, ranked above the general phased plan below (which still applies to
+anything not covered here). Status notes are from this session's re-check of the actual rows, not
+assumption — some items the owner named are already closed; don't redo closed work, move to the
+next unchecked one.
+
+1. **Block editor / dynamic blocks — F3 [alpha blocker, genuinely open, largest item]**. BEDIT/
+   BSAVE/BCLOSE for *static* blocks already work. Dynamic-block *authoring* is only a vertical
+   slice so far (Top-10 #4, `9a882adf`): one Linear parameter + one paired Stretch action,
+   JSON-command-only (`bparameter`/`bactiontool`), no draggable Block Editor UI. Still needed:
+   - Every other parameter type (Point, Polar, XY, Rotation, Alignment, Flip, Visibility, Lookup,
+     Base Point) and action type (Move, Scale, Rotate, Flip, Array, Polar Stretch, Lookup).
+   - A real Block Editor authoring UI (draggable parameter/action graphics on the canvas) — the
+     command-only slice has no palette/canvas tool yet.
+   - Editing/extending a graph a block already has (currently refused outright, not merged).
+   - Value sets/lists (min/max/increment, allowed-values) on parameters.
+   - REFEDIT (editing a block in place in the drawing, not just via the Block Editor) and xref
+     attach depth are the other half of this row — see the F2/F3 rows below for xref specifics.
+   Est. 40–65 h for the rest of F3's scope.
+
+2. **DWG/DXF file exactness and lossless save [alpha blocker on the real-file/corpus half]**.
+   Top-10 #1 (lossless save mechanics through acadrust) was re-verified 2026-11-24 as **already
+   done** (`8aba3068`) — don't re-litigate that. What's genuinely still open:
+   - Top-10 #2 / FF5: a real-file corpus check (`cargo xtask corpus` exists and runs, `15092543`)
+     still needs the owner to provide a real `storytold/cadcraft-corpus` checkout with licensed
+     third-party DWG/DXF files, and an actual AutoCAD black-box open-and-compare pass.
+   - FF3: no R14 DWG / R12 DXF output (our own `dxf_write.rs` stops at R2000 — a real new
+     version-gating subsystem, not a quick fix, ~20–30h).
+   - F1 remainder: materials -RENAME needs a minimal material table first.
+   Est. 50–75h beyond the corpus/owner-blocked half.
+
+3. **Plot styles — F14 [re-audited 2026-11-24, mostly closed, one real gap left]**. Plot dialog,
+   preview, PUBLISH, plotter devices and PDF/PNG/SVG output all work. Genuinely still open:
+   CTB/STB **binary** style-table *reading* (blocked on a public format spec — watch for one
+   before attempting a guess-based parser) and real system-printer output (duplicates H3 in
+   `hardware-parity.md`). Low remaining hours (5–15h) once a spec is available; otherwise blocked.
+
+4. **Object snap tracking — Row 1 [already closed 2026-11-23, verify only if something looks
+   wrong]**. Re-audited against actual source, not docs: tracking, extension/parallel snaps,
+   FROM/M2P/TK, typed overrides and dimensional input on grips were already landed; stale docs
+   were the only bug, fixed. If the owner finds a concrete tracking behaviour that's actually
+   broken in the running app, treat that as a new bug report, not a reopening of this whole row.
+
+5. **DWG/DXF binary fidelity beyond file exactness (ecosystem depth)**: AutoLISP/plugin-system
+   depth (Visual LISP, DCL, reactors — core AutoLISP + SCRIPT already done per `docs/roadmap.md`),
+   further blocks/xrefs depth beyond item 1 above, and localization (5% done, ~60–100h, lowest
+   priority of this list — only matters once the English-only workflow is solid).
+
+Work the unchecked rows above in order; each still links to its full row (by code: F3, FF5/Top-10
+#2, FF3, F14, Row 1) further down this file and in `plan/STATUS.md` for implementation detail.
+
 ## Phased execution plan
 
 Working order for the whole backlog, decided 2026-11-21. Each phase gates the next one for a
