@@ -20,9 +20,11 @@ use crate::foreign::ForeignObject;
 use crate::{Drawing, Handle, RawTag};
 
 mod apply;
+mod author;
 mod grips;
 mod reference;
 pub use apply::{drag_grip, set_property};
+pub use author::{LinearParam, StretchAction, author_linear_stretch};
 pub use grips::{DynGrip, GripPart, GripShape, grips};
 pub use reference::{CustomProperty, Reference, Value, custom_properties, reference};
 

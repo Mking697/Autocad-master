@@ -2,6 +2,7 @@
 //! Block Editor.
 
 pub(crate) mod bedit;
+mod bparam;
 pub(in crate::cmd) mod purge;
 
 use std::sync::Arc;
@@ -89,6 +90,7 @@ pub fn specs() -> Vec<CommandSpec> {
     .chain(xref::specs())
     .chain(refedit::specs())
     .chain(bedit::specs())
+    .chain(bparam::specs())
     .collect()
 }
 

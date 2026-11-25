@@ -34,7 +34,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-fn editing(s: &Session) -> std::result::Result<(), String> {
+pub(super) fn editing(s: &Session) -> std::result::Result<(), String> {
     match s.state() {
         Ok(st) if st.block_edit.is_some() => Ok(()),
         Ok(_) => Err("The Block Editor is not open.".into()),
@@ -123,7 +123,7 @@ fn open(s: &mut Session, name: &str, create: bool) -> Result<Value> {
     let dynamic =
         |be: &crate::blockedit::BlockEdit| crate::blockedit::has_dynamic_data(&be.host.doc, if be.current { "*Model_Space" } else { &be.name });
     if s.state().is_ok_and(|st| st.block_edit.as_ref().is_some_and(dynamic)) {
-        s.echo("This is a dynamic block: its parameters and actions are kept but can't be edited in CADCraft yet.");
+        s.echo("This is a dynamic block: most parameter and action types are kept but can't be edited in CADCraft yet (BPARAMETER/BACTIONTOOL author a Linear parameter and Stretch action).");
     }
     Ok(json!({ "block": name, "new": new }))
 }
