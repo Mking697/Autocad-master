@@ -99,3 +99,54 @@ fn bparameter_bactiontool_bsave_round_trips_through_dxf_and_the_grip_works() {
     let swung = swing(&reopened, &ins.block);
     assert_eq!((swung.a.x, swung.a.y, swung.b.x, swung.b.y), (5.0, 0.0, 5.0, 1.0), "the swing line moved by the drag");
 }
+
+#[test]
+fn bparameter_point_bactiontool_move_bsave_round_trips_through_dxf_and_the_grip_works() {
+    let (mut s, reference, _swing_in_block) = door_block();
+
+    // Edit the block: author a Point parameter at the swing's corner (2, 0) and pair a Move
+    // action that moves the swing line whole (the leaf's own width line is not in the selection).
+    s.execute("bedit", &json!({ "name": "DOOR2" })).unwrap();
+    let swing_in_editor = {
+        let b = s.doc().unwrap();
+        let l = b.model.iter().find(|e| matches!(&e.kind, EntityKind::Line(l) if l.a.x == 2.0 && l.b.y == 1.0)).unwrap();
+        l.handle
+    };
+    let r = s.execute("bparameter", &json!({ "type": "point", "at": [2.0, 0.0], "label": "Position1" })).unwrap();
+    assert_eq!(r["node"], 1);
+    let r = s.execute("bactiontool", &json!({ "type": "move", "handles": [swing_in_editor.hex()], "name": "Move1" })).unwrap();
+    assert_eq!(r["node"], 2);
+    s.execute("bsave", &json!({})).unwrap();
+    s.execute("bclose", &json!({})).unwrap();
+
+    // In the same session, it already reads as a dynamic block with a working grip.
+    let m = dynblock::dynamic_block(s.doc().unwrap(), "DOOR2").expect("DOOR2 is now a dynamic block");
+    assert_eq!(m.parameters.len(), 1);
+    assert_eq!(m.actions.len(), 1);
+    let g = dynblock::grips(s.doc().unwrap(), reference);
+    let at = g.iter().find(|g| g.part == GripPart::At).expect("the position grip is shown");
+    assert_eq!((at.at.x, at.at.y), (102.0, 0.0), "reference at (100,0), parameter at (2,0)");
+
+    // The real proof: write it to DXF bytes and reparse them, exactly as a saved file reopens.
+    let dxf = cadcraft_io::write_dxf(s.doc().unwrap());
+    let reopened = cadcraft_io::read_dxf(dxf.as_bytes()).unwrap();
+    let m2 = dynblock::dynamic_block(&reopened, "DOOR2").expect("the dynamic block survives the DXF round trip");
+    assert_eq!(m2.parameters.len(), 1);
+    assert_eq!(m2.actions.len(), 1);
+    let p = &m2.parameters[0];
+    let dynblock::ParameterKind::Point { at, label, .. } = &p.kind else { panic!("{p:?}") };
+    assert_eq!((at.x, at.y), (2.0, 0.0));
+    assert_eq!(label, "Position1");
+    let a = &m2.actions[0];
+    let dynblock::ActionKind::Move { .. } = &a.kind else { panic!("{a:?}") };
+
+    // Dragging the reopened reference's position grip to (105, 3) moves the swing line by
+    // (+3, +3) and leaves the leaf's own width line where it was (not in the action's selection).
+    let mut reopened = reopened;
+    let g = dynblock::grips(&reopened, reference);
+    let at = g.iter().find(|g| g.part == GripPart::At).expect("the position grip is shown after reopening");
+    dynblock::drag_grip(&mut reopened, reference, at.node, GripPart::At, cadcraft_geom::Vec2::new(105.0, 3.0)).unwrap();
+    let EntityKind::Insert(ins) = &reopened.entity(reference).unwrap().kind else { panic!("not a reference") };
+    let swung = swing(&reopened, &ins.block);
+    assert_eq!((swung.a.x, swung.a.y, swung.b.x, swung.b.y), (5.0, 3.0, 5.0, 4.0), "the swing line moved by the drag");
+}

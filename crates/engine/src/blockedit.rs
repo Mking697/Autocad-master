@@ -43,6 +43,25 @@ pub fn has_authoring_elements(d: &Drawing) -> bool {
     has_dynamic_data(d, "*Model_Space")
 }
 
+/// A parameter authored in this session (BPARAMETER), not yet part of any file: every BSAVE
+/// regenerates the block's dynamic-block data from this and [`PendingAction`], since nothing
+/// else keeps them (see `cmd::blocks::bparam`). This build authors exactly one parameter+action
+/// pair per block; a redefined parameter (a fresh BPARAMETER call) clears any pending action,
+/// since graph-id pairing is re-made by a fresh BACTIONTOOL call, not inferred.
+#[derive(Clone, Debug)]
+pub enum PendingParam {
+    Linear(cadcraft_doc::dynblock::LinearParam),
+    Point(cadcraft_doc::dynblock::PointParam),
+}
+
+/// An action authored in this session (BACTIONTOOL), paired with [`PendingParam`]: a Stretch
+/// action pairs with a Linear parameter, a Move action with a Point parameter.
+#[derive(Clone, Debug)]
+pub enum PendingAction {
+    Stretch(cadcraft_doc::dynblock::StretchAction),
+    Move(cadcraft_doc::dynblock::MoveAction),
+}
+
 /// The Block Editor open in a drawing.
 #[derive(Clone, Debug)]
 pub struct BlockEdit {
@@ -60,12 +79,8 @@ pub struct BlockEdit {
     base: Vec2,
     /// The editor is open on the drawing itself ([`CURRENT_DRAWING`]).
     pub current: bool,
-    /// A Linear parameter authored in this session (BPARAMETER), not yet part of any file: every
-    /// BSAVE regenerates the block's dynamic-block data from this and [`Self::pending_action`],
-    /// since nothing else keeps them (see `cmd::blocks::bparameter`).
-    pub pending_param: Option<cadcraft_doc::dynblock::LinearParam>,
-    /// A Stretch action authored (BACTIONTOOL), paired with `pending_param`.
-    pub pending_action: Option<cadcraft_doc::dynblock::StretchAction>,
+    pub pending_param: Option<PendingParam>,
+    pub pending_action: Option<PendingAction>,
 }
 
 /// Why a block can't be opened in the Block Editor, if it can't.
@@ -287,13 +302,24 @@ impl DocState {
         let Some(be) = &self.block_edit else { return Err(EngineError::Other("The Block Editor is not open.".into())) };
         let name = as_name.unwrap_or(&be.name).to_string();
         let mut d = be.compose(&self.doc, &name)?;
-        // An authored Linear parameter (BPARAMETER) and its paired Stretch action (BACTIONTOOL)
-        // aren't kept anywhere else: every save regenerates the block's dynamic-block data from
-        // them, under the saved block's own name (or `*Model_Space` when editing the drawing
-        // itself, as the reader keys a dynamic block's own drawing).
+        // An authored parameter (BPARAMETER) and its paired action (BACTIONTOOL) aren't kept
+        // anywhere else: every save regenerates the block's dynamic-block data from them, under
+        // the saved block's own name (or `*Model_Space` when editing the drawing itself, as the
+        // reader keys a dynamic block's own drawing).
         if let Some(param) = &be.pending_param {
             let record = if be.current { "*Model_Space".to_string() } else { d.block(&name).map(|b| b.name.clone()).unwrap_or_else(|| name.clone()) };
-            cadcraft_doc::dynblock::author_linear_stretch(&mut d, &record, param, be.pending_action.as_ref()).map_err(EngineError::Other)?;
+            let outcome = match (param, be.pending_action.as_ref()) {
+                (PendingParam::Linear(p), None) => cadcraft_doc::dynblock::author_linear_stretch(&mut d, &record, p, None),
+                (PendingParam::Linear(p), Some(PendingAction::Stretch(a))) => {
+                    cadcraft_doc::dynblock::author_linear_stretch(&mut d, &record, p, Some(a))
+                }
+                (PendingParam::Point(p), None) => cadcraft_doc::dynblock::author_point_move(&mut d, &record, p, None),
+                (PendingParam::Point(p), Some(PendingAction::Move(a))) => cadcraft_doc::dynblock::author_point_move(&mut d, &record, p, Some(a)),
+                (PendingParam::Linear(_), Some(PendingAction::Move(_))) | (PendingParam::Point(_), Some(PendingAction::Stretch(_))) => {
+                    Err("That action type doesn't pair with the authored parameter type.".into())
+                }
+            };
+            outcome.map_err(EngineError::Other)?;
         }
         let original = d.block(&name).map(|b| b.entities.clone()).unwrap_or_default();
         let name = d.block(&name).map(|b| b.name.clone()).unwrap_or(name);

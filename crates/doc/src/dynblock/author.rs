@@ -67,6 +67,26 @@ pub struct StretchAction {
     pub name: String,
 }
 
+/// A Point parameter to author: a single draggable position
+/// (`AcDbBlock1PtParameter` + `AcDbBlockPointParameter`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PointParam {
+    pub at: Vec3,
+    /// The property name a reference's Properties palette shows ("Position1").
+    pub label: String,
+    pub description: String,
+}
+
+/// A Move action paired with the Point parameter: dragging the point moves `selection`'s objects,
+/// whole, by the same amount (no stretch frame — a Move action always moves its whole selection).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MoveAction {
+    /// The entities it moves.
+    pub selection: Vec<Handle>,
+    /// Shown in the block editor ("Move1").
+    pub name: String,
+}
+
 /// Why [`author_linear_stretch`] would refuse to author into block `name`, if it would.
 fn refusal(d: &Drawing, name: &str) -> Option<String> {
     let key = ("BLOCK_RECORD".to_string(), name.trim().to_ascii_uppercase());
@@ -132,6 +152,48 @@ fn stretch_object(handle: Handle, owner: Handle, a: &StretchAction) -> ForeignOb
     ForeignObject { handle, kind: "BLOCKSTRETCHACTION".into(), tags }
 }
 
+fn point_object(handle: Handle, owner: Handle, p: &PointParam) -> ForeignObject {
+    let mut tags = vec![tag(5, handle.hex()), tag(330, owner.hex())];
+    tags.push(tag(100, "AcDbEvalExpr"));
+    tags.push(tag(90, PARAM_NODE.to_string()));
+    tags.push(tag(100, "AcDbBlockElement"));
+    tags.push(tag(300, "Position1"));
+    tags.push(tag(100, "AcDbBlockParameter"));
+    tags.push(tag(280, "1")); // shown in the Properties palette
+    tags.push(tag(100, "AcDbBlock1PtParameter"));
+    tags.extend(point_tags(1010, p.at));
+    tags.push(tag(93, "20")); // position grip id
+    tags.push(tag(100, "AcDbBlockPointParameter"));
+    tags.push(tag(303, p.label.clone()));
+    tags.push(tag(304, p.description.clone()));
+    ForeignObject { handle, kind: "BLOCKPOINTPARAMETER".into(), tags }
+}
+
+/// `at` is the action's own glyph location in the Block Editor (not read back into
+/// [`MoveAction`] — the paired Point parameter already carries the position).
+fn move_object(handle: Handle, owner: Handle, at: Vec3, a: &MoveAction) -> ForeignObject {
+    let mut tags = vec![tag(5, handle.hex()), tag(330, owner.hex())];
+    tags.push(tag(100, "AcDbEvalExpr"));
+    tags.push(tag(90, ACTION_NODE.to_string()));
+    tags.push(tag(100, "AcDbBlockElement"));
+    tags.push(tag(300, a.name.clone()));
+    tags.push(tag(100, "AcDbBlockAction"));
+    tags.push(tag(70, "0"));
+    tags.push(tag(71, a.selection.len().to_string()));
+    for h in &a.selection {
+        tags.push(tag(330, h.hex()));
+    }
+    tags.extend(point_tags(1010, at));
+    tags.push(tag(100, "AcDbBlockMoveAction"));
+    tags.push(tag(92, PARAM_NODE.to_string()));
+    tags.push(tag(301, "PosXDelta"));
+    tags.push(tag(93, PARAM_NODE.to_string()));
+    tags.push(tag(302, "PosYDelta"));
+    tags.push(tag(140, "1")); // multiplier
+    tags.push(tag(141, "0")); // angle offset
+    ForeignObject { handle, kind: "BLOCKMOVEACTION".into(), tags }
+}
+
 fn graph_object(handle: Handle, owner: Handle, members: &[Handle]) -> ForeignObject {
     let mut tags = vec![tag(5, handle.hex()), tag(330, owner.hex()), tag(100, "AcDbEvalGraph")];
     tags.extend(members.iter().map(|m| tag(360, m.hex())));
@@ -151,6 +213,31 @@ fn dictionary_object(handle: Handle, owner: Handle, graph: Handle) -> ForeignObj
     ForeignObject { handle, kind: "DICTIONARY".into(), tags }
 }
 
+/// The BLOCK_RECORD handle authoring resolves for block `name` (minting a `Foreign::targets`
+/// placeholder entry it if doesn't have one yet), and its lookup key — shared setup for every
+/// `author_*` function (mirrors `dynblock::apply::record_handle`'s own use of `targets`).
+fn record_and_key(d: &mut Drawing, name: &str) -> (Handle, (String, String)) {
+    let key = ("BLOCK_RECORD".to_string(), name.trim().to_ascii_uppercase());
+    let record_handle = d.foreign.targets.iter().find(|(_, k)| **k == key).map(|(h, _)| *h).unwrap_or_else(|| {
+        let h = d.new_handle();
+        std::sync::Arc::make_mut(&mut d.foreign).targets.insert(h, key.clone());
+        h
+    });
+    (record_handle, key)
+}
+
+/// Writes the graph and xdict objects tying `members` together, plus whatever `objects` already
+/// holds (the parameter and, when given, the action, already owned by `graph`), and points block
+/// `key`'s xdict at them.
+fn finish(d: &mut Drawing, key: (String, String), record_handle: Handle, graph: Handle, mut objects: Vec<ForeignObject>, members: Vec<Handle>) {
+    let xdict = d.new_handle();
+    objects.push(graph_object(graph, xdict, &members));
+    objects.push(dictionary_object(xdict, record_handle, graph));
+    let f = std::sync::Arc::make_mut(&mut d.foreign);
+    f.objects.extend(objects);
+    f.records.entry(key).or_default().xdict = Some(xdict);
+}
+
 /// Author `param` (graph id 1) and, when given, `action` (graph id 2, following the parameter's
 /// end point) into block `name`'s dynamic-block data. An error, changing nothing, when the block
 /// already has dynamic-block data, or `action` is given with an empty selection or fewer than two
@@ -167,17 +254,7 @@ pub fn author_linear_stretch(d: &mut Drawing, name: &str, param: &LinearParam, a
             return Err("The Stretch action needs a frame of at least two points.".into());
         }
     }
-    let key = ("BLOCK_RECORD".to_string(), name.trim().to_ascii_uppercase());
-    // The owner the written file resolves for us: the generic writer remaps a kept object's
-    // owner (330) through `Foreign::targets`, so the dictionary's owner reads back as the real
-    // BLOCK_RECORD even though we never see its eventual handle (mirrors
-    // `dynblock::apply::record_handle`'s own use of `targets` for the same reason).
-    let record_handle = d.foreign.targets.iter().find(|(_, k)| **k == key).map(|(h, _)| *h).unwrap_or_else(|| {
-        let h = d.new_handle();
-        std::sync::Arc::make_mut(&mut d.foreign).targets.insert(h, key.clone());
-        h
-    });
-    let xdict = d.new_handle();
+    let (record_handle, key) = record_and_key(d, name);
     let graph = d.new_handle();
     let param_h = d.new_handle();
     let mut members = vec![param_h];
@@ -187,11 +264,34 @@ pub fn author_linear_stretch(d: &mut Drawing, name: &str, param: &LinearParam, a
         objects.push(stretch_object(action_h, graph, a));
         members.push(action_h);
     }
-    objects.push(graph_object(graph, xdict, &members));
-    objects.push(dictionary_object(xdict, record_handle, graph));
-    let f = std::sync::Arc::make_mut(&mut d.foreign);
-    f.objects.extend(objects);
-    f.records.entry(key).or_default().xdict = Some(xdict);
+    finish(d, key, record_handle, graph, objects, members);
+    Ok(())
+}
+
+/// Author `param` (graph id 1) and, when given, `action` (graph id 2) into block `name`'s
+/// dynamic-block data, pairing a Point parameter with a Move action the same way
+/// [`author_linear_stretch`] pairs a Linear parameter with a Stretch action: an error, changing
+/// nothing, when the block already has dynamic-block data, or `action` has an empty selection.
+pub fn author_point_move(d: &mut Drawing, name: &str, param: &PointParam, action: Option<&MoveAction>) -> Result<(), String> {
+    if let Some(why) = refusal(d, name) {
+        return Err(why);
+    }
+    if let Some(a) = action
+        && a.selection.is_empty()
+    {
+        return Err("The Move action needs at least one selected object.".into());
+    }
+    let (record_handle, key) = record_and_key(d, name);
+    let graph = d.new_handle();
+    let param_h = d.new_handle();
+    let mut members = vec![param_h];
+    let mut objects = vec![point_object(param_h, graph, param)];
+    if let Some(a) = action {
+        let action_h = d.new_handle();
+        objects.push(move_object(action_h, graph, param.at, a));
+        members.push(action_h);
+    }
+    finish(d, key, record_handle, graph, objects, members);
     Ok(())
 }
 
@@ -291,5 +391,61 @@ mod tests {
         assert_eq!(lines[0], Line { a: Vec3::new(0.0, 0.0, 0.0), b: Vec3::new(2.0, 0.0, 0.0) }, "the un-selected line is unchanged");
         assert_eq!(lines[1], Line { a: Vec3::new(5.0, 0.0, 0.0), b: Vec3::new(5.0, 1.0, 0.0) }, "the selected line moved by the drag");
         let _ = line_of;
+    }
+
+    #[test]
+    fn authored_point_move_data_reads_back_and_a_dragged_grip_moves_the_selected_line() {
+        use super::super::GripPart;
+        let (mut d, h1, h2, r) = fixture();
+        let param = PointParam { at: Vec3::new(2.0, 0.0, 0.0), label: "Position1".into(), description: "Corner".into() };
+        let action = MoveAction { selection: vec![h2], name: "Move1".into() };
+        author_point_move(&mut d, "B", &param, Some(&action)).unwrap();
+
+        let m = super::super::dynamic_block(&d, "B").expect("B is now a dynamic block");
+        assert_eq!(m.parameters.len(), 1);
+        assert_eq!(m.actions.len(), 1);
+        let p = &m.parameters[0];
+        assert_eq!((p.node, p.element.as_str(), p.show_properties), (1, "Position1", true));
+        let super::super::ParameterKind::Point { at, label, description } = &p.kind else { panic!("{p:?}") };
+        assert_eq!((at.x, at.y, label.as_str(), description.as_str()), (2.0, 0.0, "Position1", "Corner"));
+
+        let a = &m.actions[0];
+        assert_eq!((a.node, a.name.as_str()), (2, "Move1"));
+        assert_eq!(a.selection, [h2]);
+        let super::super::ActionKind::Move { multiplier, angle_offset } = &a.kind else { panic!("{a:?}") };
+        assert_eq!((*multiplier, *angle_offset), (1.0, 0.0));
+
+        let g = super::super::grips(&d, r);
+        let at_grip = g.iter().find(|g| g.node == 1 && g.part == GripPart::At).expect("the position grip is shown");
+        assert_eq!((at_grip.at.x, at_grip.at.y), (2.0, 0.0));
+
+        super::super::drag_grip(&mut d, r, 1, GripPart::At, Vec2::new(5.0, 3.0)).unwrap();
+        let name = match &d.entity(r).unwrap().kind {
+            EntityKind::Insert(i) => i.block.clone(),
+            _ => panic!(),
+        };
+        let b = d.block(&name).unwrap();
+        let lines: Vec<Line> = b.entities.iter().filter_map(|e| if let EntityKind::Line(l) = &e.kind { Some(l.clone()) } else { None }).collect();
+        // Dragging (2,0) to (5,3) is a +3,+3 move, applied to the selected line (h2's copy) only.
+        assert_eq!(lines[0], Line { a: Vec3::new(0.0, 0.0, 0.0), b: Vec3::new(2.0, 0.0, 0.0) }, "the un-selected line is unchanged");
+        assert_eq!(lines[1], Line { a: Vec3::new(5.0, 3.0, 0.0), b: Vec3::new(5.0, 4.0, 0.0) }, "the selected line moved by the drag");
+        let _ = h1;
+    }
+
+    #[test]
+    fn a_block_that_already_has_dynamic_block_data_refuses_a_second_author_call() {
+        let (mut d, _h1, h2, _r) = fixture();
+        let param = LinearParam {
+            base: Vec3::ZERO,
+            end: Vec3::new(2.0, 0.0, 0.0),
+            label: "Distance1".into(),
+            description: String::new(),
+            from_midpoint: false,
+        };
+        author_linear_stretch(&mut d, "B", &param, None).unwrap();
+        let point = PointParam { at: Vec3::new(2.0, 0.0, 0.0), label: "Position1".into(), description: String::new() };
+        let action = MoveAction { selection: vec![h2], name: "Move1".into() };
+        let err = author_point_move(&mut d, "B", &point, Some(&action)).unwrap_err();
+        assert!(err.contains("already has dynamic-block data"), "{err}");
     }
 }
