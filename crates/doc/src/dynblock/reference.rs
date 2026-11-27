@@ -256,6 +256,15 @@ pub fn custom_properties(d: &Drawing, insert: Handle) -> Option<(String, Vec<Cus
                 let editable = lookup_sets_what_changes(&m, p.node);
                 out.push(CustomProperty { name: label.clone(), value, choices, editable });
             }
+            ParameterKind::Rotation { base: b, end: e, label, .. } => {
+                let (b, e) = match v {
+                    Some(Value::Points { base, end }) => (*base, *end),
+                    _ => (*b, *e),
+                };
+                let dir = e - b;
+                let angle = dir.y.atan2(dir.x).to_degrees();
+                out.push(CustomProperty { name: label.clone(), value: number(d, angle), choices: Vec::new(), editable: true });
+            }
             _ => {}
         }
     }

@@ -108,7 +108,7 @@ fn current(m: &DynamicBlock, values: &BTreeMap<i32, Value>, node: i32) -> Option
             ParameterKind::Linear { base, end, .. }
             | ParameterKind::Polar { base, end }
             | ParameterKind::Xy { base, end }
-            | ParameterKind::Rotation { base, end }
+            | ParameterKind::Rotation { base, end, .. }
             | ParameterKind::Alignment { base, end }
             | ParameterKind::Flip { base, end },
             None,
@@ -303,6 +303,17 @@ pub fn set_property(d: &mut Drawing, insert: Handle, name: &str, value: &str) ->
             let at = if is_x { Vec3::new(block_base.x + v / sx, at.y, at.z) } else { Vec3::new(at.x, block_base.y + v / sy, at.z) };
             plan.set.insert(p.node, Val::Point(at));
         }
+        (ParameterKind::Rotation { values, .. }, None) => {
+            let Some(Val::Points(b, e)) = current(&m, &r.values, p.node) else { return Err(format!("{name} has no points.")) };
+            let radius = (e - b).len();
+            if radius < 1e-9 {
+                return Err(format!("{name} has no direction."));
+            }
+            let angle = allowed(values, number(value)?.to_radians());
+            let e2 = Vec3::new(b.x + radius * angle.cos(), b.y + radius * angle.sin(), e.z);
+            plan.set.insert(p.node, Val::Points(b, e2));
+            plan.chain(&m, &r.values, p.node, "AngleDelta")?;
+        }
         _ => return Err(format!("CADCraft can't change {name} yet.")),
     }
     apply(d, insert, &r.definition, &r.values, &plan.set, p.node)
@@ -357,6 +368,21 @@ pub fn drag_grip(d: &mut Drawing, insert: Handle, node: i32, part: super::GripPa
             let Some(Val::Point(at)) = current(&m, &r.values, node) else { return Err(format!("{label} has no position.")) };
             plan.set.insert(node, Val::Point(Vec3::new(q.x, q.y, at.z)));
         }
+        (ParameterKind::Rotation { values, label, .. }, GripPart::End) => {
+            let Some(Val::Points(b, e)) = current(&m, &r.values, node) else { return Err(format!("{label} has no points.")) };
+            let radius = (e - b).len();
+            if radius < 1e-9 {
+                return Err(format!("{label} has no direction."));
+            }
+            let dir = Vec2::new(q.x - b.x, q.y - b.y);
+            if dir.len() < 1e-12 {
+                return Err(format!("{label} must be dragged away from its base point."));
+            }
+            let angle = allowed(values, dir.y.atan2(dir.x));
+            let e2 = Vec3::new(b.x + radius * angle.cos(), b.y + radius * angle.sin(), e.z);
+            plan.set.insert(node, Val::Points(b, e2));
+            plan.chain(&m, &r.values, node, "AngleDelta")?;
+        }
         _ => return Err("That grip can't be dragged.".into()),
     }
     apply(d, insert, &r.definition, &r.values, &plan.set, node)
@@ -378,6 +404,21 @@ fn delta(old: &Val, new: &Val, connection: &str) -> f64 {
         }
         _ => 0.0,
     }
+}
+
+/// The signed angle (radians, CCW) a Rotation parameter's own base->end direction turned by, from
+/// `old` to `new` ("AngleDelta"): `None` when either has no direction, or they aren't two-point
+/// values at all.
+fn rotation_delta(old: &Val, new: &Val) -> Option<f64> {
+    let (Val::Points(ob, oe), Val::Points(_, ne)) = (old, new) else { return None };
+    let a0 = (*oe - *ob).xy();
+    let a1 = (*ne - *ob).xy();
+    if a0.len() < 1e-9 || a1.len() < 1e-9 {
+        return None;
+    }
+    let cross = a0.x * a1.y - a0.y * a1.x;
+    let dot = a0.x * a1.x + a0.y * a1.y;
+    Some(cross.atan2(dot))
 }
 
 /// Move entity `e` by `v`: the listed vertices of a line or polyline, else the whole object.
@@ -446,10 +487,33 @@ fn apply(
     // New values, starting from the change; actions add the parameters they carry along.
     let mut new: BTreeMap<i32, Val> = set.clone();
     let mut moves: HashMap<Handle, Vec<(Option<Vec<i32>>, Vec2)>> = HashMap::new();
+    let mut rotations: HashMap<Handle, Vec<(Vec2, f64)>> = HashMap::new();
     let param_of: HashMap<Handle, i32> = m.parameters.iter().map(|p| (p.handle, p.node)).collect();
     for a in &m.actions {
         let changed: Vec<&(i32, String)> = a.connections.iter().filter(|(n, _)| set.contains_key(n)).collect();
         if changed.is_empty() {
+            continue;
+        }
+        if let ActionKind::Rotate { base } = &a.kind {
+            // A Rotate action's whole selection turns by its connected Rotation parameter's own
+            // angle change; a pivot tied to another parameter (a moving base point) is a future
+            // slice (see `ActionKind::Rotate`'s own doc comment), so `base` is taken as fixed.
+            let Some((node, _)) = a.connections.first() else { continue };
+            let (Some(new_v), Some(old_v)) = (set.get(node), current(&m, values, *node)) else { continue };
+            let Some(ang) = rotation_delta(&old_v, new_v) else { continue };
+            if !ang.is_finite() || ang == 0.0 {
+                continue;
+            }
+            let pivot = base.xy();
+            let mut handled: HashSet<Handle> = HashSet::new();
+            for h in &a.selection {
+                if !handled.insert(*h) || param_of.contains_key(h) {
+                    continue;
+                }
+                if let Some(c) = copy_of(h) {
+                    rotations.entry(c).or_default().push((pivot, ang));
+                }
+            }
             continue;
         }
         let (mult, angle, frame, vertices): (f64, f64, &[Vec2], &[(Handle, Vec<i32>)]) = match &a.kind {
@@ -558,6 +622,9 @@ fn apply(
         }
         for (idx, v) in moves.get(&e.handle).into_iter().flatten() {
             move_entity(&mut c, idx.as_deref(), *v);
+        }
+        for (pivot, ang) in rotations.get(&e.handle).into_iter().flatten() {
+            c.kind.transform(&Mat3::rotate_about(*pivot, *ang));
         }
         if let EntityKind::Hatch(h) = &mut c.kind {
             for l in &mut h.loops {
@@ -897,6 +964,13 @@ fn write_history(tags: &mut Vec<RawTag>, p: &super::Parameter, old: Option<&Val>
             c
         }
         (ParameterKind::Point { at, .. }, Val::Point(q)) => grips(&[(was.unwrap_or(*at), *q, *at)]),
+        (ParameterKind::Rotation { label, .. }, Val::Points(b, e)) => {
+            let mut c: Vec<(i32, Vec<RawTag>)> = p.grips.iter().filter(|g| **g != 0).map(|g| (*g, Vec::new())).collect();
+            let angle = (*e - *b).xy();
+            let angle = angle.y.atan2(angle.x);
+            c.push((p.node, vec![tag(1071, p.node.to_string()), tag(300, label.clone()), tag(40, angle.to_string())]));
+            c
+        }
         _ => return,
     };
     // The header, then the entries (each from its 1071).

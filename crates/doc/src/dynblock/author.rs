@@ -87,6 +87,27 @@ pub struct MoveAction {
     pub name: String,
 }
 
+/// A Rotation parameter to author: an angle about `base`, `end` giving its current angle and
+/// radius (`AcDbBlock2PtParameter` + `AcDbBlockRotationParameter`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RotationParam {
+    pub base: Vec3,
+    pub end: Vec3,
+    /// The property name a reference's Properties palette shows ("Angle1").
+    pub label: String,
+    pub description: String,
+}
+
+/// A Rotate action paired with the Rotation parameter: dragging the angle grip turns
+/// `selection`'s objects, whole, about the parameter's base point by the same angle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RotateAction {
+    /// The entities it rotates.
+    pub selection: Vec<Handle>,
+    /// Shown in the block editor ("Rotate1").
+    pub name: String,
+}
+
 /// A named set of visible objects, part of a [`VisibilityParam`]: the state's name and which of
 /// the parameter's `controlled` objects are shown in it (the rest are hidden). This slice leaves
 /// a state's "active" list (other parameters/actions shown only in this state) empty — every
@@ -219,6 +240,68 @@ fn move_object(handle: Handle, owner: Handle, at: Vec3, a: &MoveAction) -> Forei
     tags.push(tag(140, "1")); // multiplier
     tags.push(tag(141, "0")); // angle offset
     ForeignObject { handle, kind: "BLOCKMOVEACTION".into(), tags }
+}
+
+/// A Rotation parameter: `base`/`end` in `AcDbBlock2PtParameter` (grip ids `0` then `40`: a
+/// rotation parameter has only the one grip that turns the angle, no base grip), label and
+/// description in `AcDbBlockRotationParameter`, with no value-set limits (a full turn, as
+/// AutoCAD defaults it) — matching [`parameter_object`]'s own layout for the Linear case.
+fn rotation_object(handle: Handle, owner: Handle, p: &RotationParam) -> ForeignObject {
+    let mut tags = vec![tag(5, handle.hex()), tag(330, owner.hex())];
+    tags.push(tag(100, "AcDbEvalExpr"));
+    tags.push(tag(90, PARAM_NODE.to_string()));
+    tags.push(tag(100, "AcDbBlockElement"));
+    tags.push(tag(300, "Rotation1"));
+    tags.push(tag(100, "AcDbBlockParameter"));
+    tags.push(tag(280, "1")); // shown in the Properties palette
+    tags.push(tag(100, "AcDbBlock2PtParameter"));
+    tags.extend(point_tags(1010, p.base));
+    tags.extend(point_tags(1011, p.end));
+    tags.push(tag(170, "2"));
+    tags.push(tag(91, "0")); // no base grip
+    tags.push(tag(91, "40")); // the angle grip id
+    tags.push(tag(100, "AcDbBlockRotationParameter"));
+    tags.push(tag(305, p.label.clone()));
+    tags.push(tag(306, p.description.clone()));
+    tags.push(tag(307, String::new())); // the value set's own unused description
+    tags.push(tag(96, "0")); // no minimum/maximum/increment/list
+    tags.push(tag(141, "0"));
+    tags.push(tag(142, "0"));
+    tags.push(tag(143, "0"));
+    tags.push(tag(175, "0"));
+    ForeignObject { handle, kind: "BLOCKROTATIONPARAMETER".into(), tags }
+}
+
+/// A Rotate action paired with the Rotation parameter: `base` is the parameter's own base point
+/// (this slice always rotates about a fixed base, see [`super::ActionKind::Rotate`]'s own doc
+/// comment); the base-point connections (`AcDbBlockActionWithBasePt`'s 92/93/301/302) are written
+/// as unused placeholders pointing at the parameter (CADCraft's own reader does not follow them
+/// yet, but other programs' readers expect the groups to be present).
+fn rotate_object(handle: Handle, owner: Handle, base: Vec3, a: &RotateAction) -> ForeignObject {
+    let mut tags = vec![tag(5, handle.hex()), tag(330, owner.hex())];
+    tags.push(tag(100, "AcDbEvalExpr"));
+    tags.push(tag(90, ACTION_NODE.to_string()));
+    tags.push(tag(100, "AcDbBlockElement"));
+    tags.push(tag(300, a.name.clone()));
+    tags.push(tag(100, "AcDbBlockAction"));
+    tags.push(tag(70, "0"));
+    tags.push(tag(71, a.selection.len().to_string()));
+    for h in &a.selection {
+        tags.push(tag(330, h.hex()));
+    }
+    tags.extend(point_tags(1010, base));
+    tags.push(tag(100, "AcDbBlockActionWithBasePt"));
+    tags.push(tag(92, PARAM_NODE.to_string()));
+    tags.push(tag(301, "UpdatedBaseX"));
+    tags.push(tag(93, PARAM_NODE.to_string()));
+    tags.push(tag(302, "UpdatedBaseY"));
+    tags.extend(point_tags(1011, base));
+    tags.push(tag(280, "0"));
+    tags.extend(point_tags(1012, base));
+    tags.push(tag(100, "AcDbBlockRotationAction"));
+    tags.push(tag(94, PARAM_NODE.to_string()));
+    tags.push(tag(303, "AngleDelta"));
+    ForeignObject { handle, kind: "BLOCKROTATEACTION".into(), tags }
 }
 
 /// A grip id is required for every state, even a block with no further authoring (AutoCAD shows
@@ -374,6 +457,37 @@ pub fn author_visibility(d: &mut Drawing, name: &str, param: &VisibilityParam) -
     let param_h = d.new_handle();
     let objects = vec![visibility_object(param_h, graph, param)];
     finish(d, key, record_handle, graph, objects, vec![param_h]);
+    Ok(())
+}
+
+/// Author `param` (graph id 1) and, when given, `action` (graph id 2) into block `name`'s
+/// dynamic-block data, pairing a Rotation parameter with a Rotate action the same way
+/// [`author_linear_stretch`] pairs a Linear parameter with a Stretch action: an error, changing
+/// nothing, when the block already has dynamic-block data, `base` and `end` are the same point
+/// (an angle needs a direction), or `action` has an empty selection.
+pub fn author_rotation_rotate(d: &mut Drawing, name: &str, param: &RotationParam, action: Option<&RotateAction>) -> Result<(), String> {
+    if let Some(why) = refusal(d, name) {
+        return Err(why);
+    }
+    if param.base.xy().near(param.end.xy(), 1e-9) {
+        return Err("The Rotation parameter's base and end points must not be the same point.".into());
+    }
+    if let Some(a) = action
+        && a.selection.is_empty()
+    {
+        return Err("The Rotate action needs at least one selected object.".into());
+    }
+    let (record_handle, key) = record_and_key(d, name);
+    let graph = d.new_handle();
+    let param_h = d.new_handle();
+    let mut members = vec![param_h];
+    let mut objects = vec![rotation_object(param_h, graph, param)];
+    if let Some(a) = action {
+        let action_h = d.new_handle();
+        objects.push(rotate_object(action_h, graph, param.base, a));
+        members.push(action_h);
+    }
+    finish(d, key, record_handle, graph, objects, members);
     Ok(())
 }
 
@@ -571,6 +685,60 @@ mod tests {
         assert!(!controlled_copy.common.visible, "the controlled line is hidden in the Off state");
         let other = b.entities.iter().find(|e| matches!(&e.kind, EntityKind::Line(l) if l.a.x == 0.0)).expect("the other line's copy");
         assert!(other.common.visible, "the uncontrolled line stays visible");
+        let _ = h1;
+    }
+
+    #[test]
+    fn authored_rotation_rotate_data_reads_back_and_a_dragged_grip_rotates_the_selected_line() {
+        use super::super::GripPart;
+        let (mut d, h1, h2, r) = fixture();
+        // Base at the origin, end at (2,0): radius 2, starting angle 0.
+        let param = RotationParam { base: Vec3::ZERO, end: Vec3::new(2.0, 0.0, 0.0), label: "Angle1".into(), description: "Swing".into() };
+        let action = RotateAction { selection: vec![h2], name: "Rotate1".into() };
+        author_rotation_rotate(&mut d, "B", &param, Some(&action)).unwrap();
+
+        let m = super::super::dynamic_block(&d, "B").expect("B is now a dynamic block");
+        assert_eq!(m.parameters.len(), 1);
+        assert_eq!(m.actions.len(), 1);
+        let p = &m.parameters[0];
+        assert_eq!((p.node, p.element.as_str(), p.show_properties), (1, "Rotation1", true));
+        let super::super::ParameterKind::Rotation { base, end, label, description, .. } = &p.kind else { panic!("{p:?}") };
+        assert_eq!((base.x, base.y, end.x, end.y), (0.0, 0.0, 2.0, 0.0));
+        assert_eq!((label.as_str(), description.as_str()), ("Angle1", "Swing"));
+
+        let a = &m.actions[0];
+        assert_eq!((a.node, a.name.as_str()), (2, "Rotate1"));
+        assert_eq!(a.selection, [h2]);
+        assert_eq!(a.connections, [(1, "AngleDelta".to_string())]);
+        let super::super::ActionKind::Rotate { base: action_base } = &a.kind else { panic!("{a:?}") };
+        assert_eq!((action_base.x, action_base.y), (0.0, 0.0));
+
+        let (_, props) = super::super::custom_properties(&d, r).expect("custom properties");
+        let prop = props.iter().find(|p| p.name == "Angle1").expect("Angle1 property");
+        assert_eq!(prop.value, "0.0000");
+
+        let g = super::super::grips(&d, r);
+        let end_grip = g.iter().find(|g| g.node == 1 && g.part == GripPart::End).expect("the rotation grip is shown");
+        assert_eq!((end_grip.at.x, end_grip.at.y), (2.0, 0.0));
+
+        // Dragging the grip to (0, 2) sets the angle to 90 degrees (radius stays 2).
+        super::super::drag_grip(&mut d, r, 1, GripPart::End, Vec2::new(0.0, 2.0)).unwrap();
+        let (_, props) = super::super::custom_properties(&d, r).expect("custom properties after the drag");
+        let prop = props.iter().find(|p| p.name == "Angle1").expect("Angle1 property");
+        assert_eq!(prop.value, "90.0000");
+
+        let name = match &d.entity(r).unwrap().kind {
+            EntityKind::Insert(i) => i.block.clone(),
+            _ => panic!(),
+        };
+        let b = d.block(&name).unwrap();
+        let lines: Vec<Line> = b.entities.iter().filter_map(|e| if let EntityKind::Line(l) = &e.kind { Some(l.clone()) } else { None }).collect();
+        // A 90-degree turn about the origin: (x,y) -> (-y,x). The unselected line (0,0)-(2,0) is
+        // unchanged; the selected one, (2,0)-(2,1), becomes (0,2)-(-1,2).
+        assert_eq!(lines[0], Line { a: Vec3::new(0.0, 0.0, 0.0), b: Vec3::new(2.0, 0.0, 0.0) }, "the un-selected line is unchanged");
+        let rotated = &lines[1];
+        assert!((rotated.a.x - 0.0).abs() < 1e-9 && (rotated.a.y - 2.0).abs() < 1e-9, "{rotated:?}");
+        assert!((rotated.b.x - (-1.0)).abs() < 1e-9 && (rotated.b.y - 2.0).abs() < 1e-9, "{rotated:?}");
         let _ = h1;
     }
 }

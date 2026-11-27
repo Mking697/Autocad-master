@@ -56,6 +56,8 @@ pub enum GripShape {
     Point,
     /// A down-pointing triangle: click it for the property's choices.
     List,
+    /// A circular arrow: drag it around its base point to turn the angle.
+    Rotation,
 }
 
 /// One grip of a dynamic block reference.
@@ -201,6 +203,28 @@ pub fn grips(d: &Drawing, insert: Handle) -> Vec<DynGrip> {
                         dir: Vec2::ZERO,
                         property: label.clone(),
                         choices: list.clone(),
+                    });
+                }
+            }
+            ParameterKind::Rotation { base, end, label, .. } => {
+                let (b, e) = match r.values.get(&p.node) {
+                    Some(Value::Points { base, end }) => (*base, *end),
+                    _ => (*base, *end),
+                };
+                // The real grip id is at index 1 (index 0 is always 0: a rotation parameter has
+                // no base grip, only the one that turns the angle, see `author.rs`'s own writer).
+                if shown(p.node, grip(1)) {
+                    let u = e - b;
+                    let u = if u.len() > 1e-12 { u * (1.0 / u.len()) } else { Vec3::new(1.0, 0.0, 0.0) };
+                    let at = world(e);
+                    out.push(DynGrip {
+                        node: p.node,
+                        part: GripPart::End,
+                        shape: GripShape::Rotation,
+                        at,
+                        dir: toward(e, u),
+                        property: label.clone(),
+                        choices: Vec::new(),
                     });
                 }
             }

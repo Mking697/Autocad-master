@@ -210,3 +210,66 @@ fn bparameter_visibility_bsave_round_trips_through_dxf_and_set_property_hides_th
     let still_shown = b.entities.iter().find(|e| matches!(&e.kind, EntityKind::Line(l) if l.a.y == l.b.y)).expect("the width line's copy");
     assert!(still_shown.common.visible, "the uncontrolled width line stays visible");
 }
+
+#[test]
+fn bparameter_rotation_bactiontool_rotate_bsave_round_trips_through_dxf_and_the_grip_works() {
+    let (mut s, reference, _swing_in_block) = door_block();
+
+    // Edit the block: author a Rotation parameter about the base point (0,0), its grip starting
+    // at (0,1) (radius 1, angle 90 degrees), and pair a Rotate action that turns the swing line
+    // (the leaf's own width line is not in the selection, so it stays put).
+    s.execute("bedit", &json!({ "name": "DOOR2" })).unwrap();
+    let swing_in_editor = {
+        let b = s.doc().unwrap();
+        let l = b.model.iter().find(|e| matches!(&e.kind, EntityKind::Line(l) if l.a.x == 2.0 && l.b.y == 1.0)).unwrap();
+        l.handle
+    };
+    let r = s.execute("bparameter", &json!({ "type": "rotation", "base": [0.0, 0.0], "end": [0.0, 1.0], "label": "Angle1" })).unwrap();
+    assert_eq!(r["node"], 1);
+    let r = s.execute("bactiontool", &json!({ "type": "rotate", "handles": [swing_in_editor.hex()], "name": "Rotate1" })).unwrap();
+    assert_eq!(r["node"], 2);
+    s.execute("bsave", &json!({})).unwrap();
+    s.execute("bclose", &json!({})).unwrap();
+
+    // In the same session, it already reads as a dynamic block with a working angle grip.
+    let m = dynblock::dynamic_block(s.doc().unwrap(), "DOOR2").expect("DOOR2 is now a dynamic block");
+    assert_eq!(m.parameters.len(), 1);
+    assert_eq!(m.actions.len(), 1);
+    let g = dynblock::grips(s.doc().unwrap(), reference);
+    let end = g.iter().find(|g| g.part == GripPart::End).expect("the angle grip is shown");
+    assert_eq!((end.at.x, end.at.y), (100.0, 1.0), "reference at (100,0), parameter end at (0,1)");
+
+    // The real proof: write it to DXF bytes and reparse them, exactly as a saved file reopens.
+    let dxf = cadcraft_io::write_dxf(s.doc().unwrap());
+    let reopened = cadcraft_io::read_dxf(dxf.as_bytes()).unwrap();
+    let m2 = dynblock::dynamic_block(&reopened, "DOOR2").expect("the dynamic block survives the DXF round trip");
+    assert_eq!(m2.parameters.len(), 1);
+    assert_eq!(m2.actions.len(), 1);
+    let p = &m2.parameters[0];
+    let dynblock::ParameterKind::Rotation { base, end, label, .. } = &p.kind else { panic!("{p:?}") };
+    assert_eq!((base.x, base.y, end.x, end.y), (0.0, 0.0, 0.0, 1.0));
+    assert_eq!(label, "Angle1");
+    let a = &m2.actions[0];
+    assert_eq!(a.connections, [(p.node, "AngleDelta".to_string())]);
+    let dynblock::ActionKind::Rotate { base: action_base } = &a.kind else { panic!("{a:?}") };
+    assert_eq!((action_base.x, action_base.y), (0.0, 0.0));
+
+    // Dragging the reopened reference's angle grip from (100,1) (angle 90 degrees, reference base
+    // at (100,0)) to (101,0) (angle 0 degrees) turns the parameter -90 degrees, which rotates the
+    // swing line, (2,0)-(2,1) in block coordinates, by -90 degrees about the origin: (x,y) ->
+    // (y,-x), giving (0,-2)-(1,-2); the leaf's own width line, not in the selection, is untouched.
+    let mut reopened = reopened;
+    let g = dynblock::grips(&reopened, reference);
+    let end = g.iter().find(|g| g.part == GripPart::End).expect("the angle grip is shown after reopening");
+    dynblock::drag_grip(&mut reopened, reference, end.node, GripPart::End, cadcraft_geom::Vec2::new(101.0, 0.0)).unwrap();
+    let EntityKind::Insert(ins) = &reopened.entity(reference).unwrap().kind else { panic!("not a reference") };
+    let b = reopened.block(&ins.block).unwrap();
+    let lines: Vec<Line> = b.entities.iter().filter_map(|e| if let EntityKind::Line(l) = &e.kind { Some(l.clone()) } else { None }).collect();
+    // The leaf's own width line is unselected and unchanged, (0,0)-(2,0); the other is the swung
+    // one (both its points land at y = -2 after the -90-degree turn, unlike the width line's 0).
+    let still = lines.iter().find(|l| l.a.y == 0.0 && l.b.y == 0.0).expect("the leaf's own width line's copy");
+    assert_eq!((still.a.x, still.a.y, still.b.x, still.b.y), (0.0, 0.0, 2.0, 0.0), "the un-selected line is unchanged");
+    let swung = lines.iter().find(|l| l.a.y != 0.0 || l.b.y != 0.0).expect("the swung swing line's copy");
+    assert!((swung.a.x - 0.0).abs() < 1e-9 && (swung.a.y - (-2.0)).abs() < 1e-9, "{swung:?}");
+    assert!((swung.b.x - 1.0).abs() < 1e-9 && (swung.b.y - (-2.0)).abs() < 1e-9, "{swung:?}");
+}

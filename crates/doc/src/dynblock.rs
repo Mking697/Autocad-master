@@ -25,8 +25,8 @@ mod grips;
 mod reference;
 pub use apply::{drag_grip, set_property};
 pub use author::{
-    LinearParam, MoveAction, PointParam, StretchAction, VisibilityParam, VisibilityStateDef, author_linear_stretch, author_point_move,
-    author_visibility,
+    LinearParam, MoveAction, PointParam, RotateAction, RotationParam, StretchAction, VisibilityParam, VisibilityStateDef, author_linear_stretch,
+    author_point_move, author_rotation_rotate, author_visibility,
 };
 pub use grips::{DynGrip, GripPart, GripShape, grips};
 pub use reference::{CustomProperty, Reference, Value, custom_properties, reference};
@@ -96,8 +96,9 @@ pub enum ParameterKind {
     Polar { base: Vec3, end: Vec3 },
     /// Horizontal and vertical distances from a base point.
     Xy { base: Vec3, end: Vec3 },
-    /// An angle about a base point.
-    Rotation { base: Vec3, end: Vec3 },
+    /// An angle about a base point: `end` gives the current angle and radius (the angle from the
+    /// block's x axis to `end - base`); `label`/`description`/`values` mirror Linear's own.
+    Rotation { base: Vec3, end: Vec3, label: String, description: String, values: ValueSet },
     /// Aligns the reference with nearby geometry.
     Alignment { base: Vec3, end: Vec3 },
     /// Mirrors the objects about a reflection line.
@@ -128,7 +129,8 @@ impl ParameterKind {
             ParameterKind::Linear { label, .. }
             | ParameterKind::Point { label, .. }
             | ParameterKind::Visibility { label, .. }
-            | ParameterKind::Lookup { label, .. } => Some(label),
+            | ParameterKind::Lookup { label, .. }
+            | ParameterKind::Rotation { label, .. } => Some(label),
             _ => None,
         }
     }
@@ -218,7 +220,15 @@ pub enum ActionKind {
         angle_offset: f64,
     },
     Scale,
-    Rotate,
+    /// Turns the selection about `base` by the angle change of the Rotation parameter it follows
+    /// (the parameter's graph id and "AngleDelta" are in `connections` above). The public DXF
+    /// Reference's `AcDbBlockRotateAction` carries a base point and a base-point connection pair
+    /// (for a pivot tied to another parameter) besides the angle connection; this build rotates
+    /// about a fixed `base` and does not yet follow a moving pivot, which a future slice can add
+    /// without changing this shape (the base-point connections would simply start being read).
+    Rotate {
+        base: Vec3,
+    },
     Flip,
     Array,
     PolarStretch,
@@ -414,12 +424,25 @@ fn parameter(kind: &str, secs: &[(&str, &[RawTag])]) -> ParameterKind {
             ParameterKind::Lookup { at: one(), label: c.string(303), description: c.string(304) }
         }
         "BLOCKBASEPOINTPARAMETER" => ParameterKind::BasePoint { at: one() },
-        "BLOCKPOLARPARAMETER" | "BLOCKXYPARAMETER" | "BLOCKROTATIONPARAMETER" | "BLOCKALIGNMENTPARAMETER" | "BLOCKFLIPPARAMETER" => {
+        "BLOCKROTATIONPARAMETER" => {
+            let (base, end) = two();
+            let mut c = Cursor::new(section(secs, "AcDbBlockRotationParameter"));
+            let label = c.string(305);
+            let description = c.string(306);
+            // A second copy of the grip's point (1011) and a radius/offset real (140) follow here
+            // in real AutoCAD output, before the value set; CADCraft doesn't need them (`base` and
+            // `end` already give the radius and current angle), so `Cursor`'s forward-only lookups
+            // simply skip over them to reach the value set's own leading 307, the same way
+            // `value_set` itself skips a group it doesn't use.
+            c.point(1011);
+            c.real(140);
+            ParameterKind::Rotation { base, end, label, description, values: value_set(&mut c) }
+        }
+        "BLOCKPOLARPARAMETER" | "BLOCKXYPARAMETER" | "BLOCKALIGNMENTPARAMETER" | "BLOCKFLIPPARAMETER" => {
             let (base, end) = two();
             match kind {
                 "BLOCKPOLARPARAMETER" => ParameterKind::Polar { base, end },
                 "BLOCKXYPARAMETER" => ParameterKind::Xy { base, end },
-                "BLOCKROTATIONPARAMETER" => ParameterKind::Rotation { base, end },
                 "BLOCKALIGNMENTPARAMETER" => ParameterKind::Alignment { base, end },
                 _ => ParameterKind::Flip { base, end },
             }
@@ -476,7 +499,7 @@ fn action(handle: Handle, node: i32, name: String, kind: &str, secs: &[(&str, &[
             (two_connections(tags), ActionKind::Move { multiplier, angle_offset })
         }
         "BLOCKSCALEACTION" => (Vec::new(), ActionKind::Scale),
-        "BLOCKROTATEACTION" => (Vec::new(), ActionKind::Rotate),
+        "BLOCKROTATEACTION" => rotate(secs),
         "BLOCKFLIPACTION" => (Vec::new(), ActionKind::Flip),
         "BLOCKARRAYACTION" => (Vec::new(), ActionKind::Array),
         "BLOCKPOLARSTRETCHACTION" => (Vec::new(), ActionKind::PolarStretch),
@@ -491,6 +514,20 @@ fn two_connections(tags: &[RawTag]) -> Vec<(i32, String)> {
     let first = |code: i32| Cursor::new(tags).next(code).unwrap_or_default().to_string();
     let int = |code: i32| first(code).trim().parse().unwrap_or(0);
     vec![(int(92), first(301)), (int(93), first(302))]
+}
+
+/// A rotate action: the base point it turns about (`AcDbBlockActionWithBasePt`'s current point,
+/// 1011/1021/1031 — read directly, as its surrounding base-point connections (92/93/301/302) are
+/// not yet followed, see [`ActionKind::Rotate`]) and the single connection to the Rotation
+/// parameter's angle (`AcDbBlockRotationAction`'s 94 and 303, named "AngleDelta" in files CADCraft
+/// has seen).
+fn rotate(secs: &[(&str, &[RawTag])]) -> (Vec<(i32, String)>, ActionKind) {
+    let base = Cursor::new(section(secs, "AcDbBlockActionWithBasePt")).point(1011);
+    let mut c = Cursor::new(section(secs, "AcDbBlockRotationAction"));
+    let node = c.int(94);
+    let property = c.string(303);
+    let connections = if property.is_empty() { Vec::new() } else { vec![(node, property)] };
+    (connections, ActionKind::Rotate { base })
 }
 
 /// A stretch action: its two connections, the frame (72 count, 1011/1021 points), the objects
