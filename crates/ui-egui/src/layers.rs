@@ -192,6 +192,155 @@ fn lt_sample(p: &egui::Painter, r: Rect, lt: Option<&cadcraft_doc::Linetype>, c:
     }
 }
 
+/// What [`linetype_button`] picked.
+pub enum LinetypePick {
+    /// An already-loaded linetype.
+    Name(String),
+    /// A standard-library linetype that must be loaded (via the `linetype` command) before it
+    /// can be set.
+    LoadAndSet(String),
+    /// Load every standard-library linetype; no selection made.
+    LoadAll,
+}
+
+/// A linetype button (preview + name) that opens a popup of the drawing's loaded linetypes, and
+/// (if `library` is non-empty) a Load submenu to load more from the standard library first.
+/// `none`, when `Some(label)`, adds a top row for a logical "no linetype" choice (DIMLTYPE/
+/// DIMLTEX1/DIMLTEX2's ByBlock) whose picked name is the empty string. Used by the Layer
+/// Properties Manager and the Dimension Style Manager (`managers.rs::dimstyle`).
+pub fn linetype_button(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    current: &str,
+    linetypes: &[cadcraft_doc::Linetype],
+    library: &[String],
+    none: Option<&str>,
+    width: f32,
+) -> Option<LinetypePick> {
+    let t = Tokens::get();
+    let cur_lt = linetypes.iter().find(|x| x.name.eq_ignore_ascii_case(current));
+    let shown_name = if current.is_empty() { none.unwrap_or("ByBlock") } else { current };
+    let resp = ui
+        .allocate_ui(vec2(width, 20.0), |ui| {
+            let (r, resp) = ui.allocate_exact_size(vec2(width, 20.0), Sense::click());
+            if resp.hovered() {
+                ui.painter().rect_filled(r, 2.0, t.control_hover.gamma_multiply(0.5));
+            }
+            lt_sample(ui.painter(), Rect::from_min_size(pos2(r.left() + 3.0, r.top()), vec2(30.0, r.height())), cur_lt, t.text);
+            ui.painter().text(
+                pos2(r.left() + 38.0, r.center().y),
+                egui::Align2::LEFT_CENTER,
+                crate::i18n::t(shown_name),
+                crate::theme::body(),
+                t.text,
+            );
+            resp
+        })
+        .inner;
+    let mut out = None;
+    egui::Popup::from_toggle_button_response(&resp).id(id).width(240.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        if let Some(label) = none {
+            if ui.selectable_label(current.eq_ignore_ascii_case("ByLayer"), crate::tl!("ByLayer")).clicked() {
+                out = Some(LinetypePick::Name("ByLayer".into()));
+                ui.close();
+            }
+            let (r, nresp) = ui.allocate_exact_size(vec2(230.0, 20.0), Sense::click());
+            if nresp.hovered() || current.is_empty() {
+                ui.painter().rect_filled(r, 2.0, t.accent.gamma_multiply(if nresp.hovered() { 0.6 } else { 0.3 }));
+            }
+            ui.painter().text(pos2(r.left() + 4.0, r.center().y), egui::Align2::LEFT_CENTER, crate::i18n::t(label), crate::theme::body(), t.text);
+            if nresp.clicked() {
+                out = Some(LinetypePick::Name(String::new()));
+                ui.close();
+            }
+        }
+        ui.label(RichText::new(crate::tl!("Loaded linetypes")).small().color(t.text_dim));
+        for lt in linetypes.iter().filter(|x| !["bylayer", "byblock"].contains(&x.name.to_ascii_lowercase().as_str())) {
+            let (r, resp) = ui.allocate_exact_size(vec2(230.0, 20.0), Sense::click());
+            if resp.hovered() || lt.name.eq_ignore_ascii_case(current) {
+                ui.painter().rect_filled(r, 2.0, t.accent.gamma_multiply(if resp.hovered() { 0.6 } else { 0.3 }));
+            }
+            lt_sample(ui.painter(), Rect::from_min_size(pos2(r.left() + 4.0, r.top()), vec2(50.0, r.height())), Some(lt), t.text);
+            ui.painter().text(pos2(r.left() + 62.0, r.center().y), egui::Align2::LEFT_CENTER, &lt.name, crate::theme::body(), t.text);
+            if resp.on_hover_text(&lt.description).clicked() {
+                out = Some(LinetypePick::Name(lt.name.clone()));
+                ui.close();
+            }
+        }
+        if !library.is_empty() {
+            ui.separator();
+            ui.menu_button(crate::tl!("Load..."), |ui| {
+                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    for n in library {
+                        if ui.button(n).clicked() {
+                            out = Some(LinetypePick::LoadAndSet(n.clone()));
+                            ui.close();
+                        }
+                    }
+                });
+                ui.separator();
+                if ui.button(crate::tl!("Load all")).clicked() {
+                    out = Some(LinetypePick::LoadAll);
+                    ui.close();
+                }
+            });
+        }
+    });
+    out
+}
+
+/// A lineweight button (preview + name) that opens a popup of the standard lineweights plus
+/// Default (and, when `by` is set, ByLayer/ByBlock too — a layer's own lineweight can't be
+/// either, but a dimension style's can: DIMLWD/DIMLWE). Used by the Layer Properties Manager and
+/// the Dimension Style Manager (`managers.rs::dimstyle`).
+pub fn lineweight_button(ui: &mut egui::Ui, id: egui::Id, current: Lineweight, by: bool, width: f32) -> Option<Lineweight> {
+    let t = Tokens::get();
+    let resp = ui
+        .allocate_ui(vec2(width, 20.0), |ui| {
+            let (r, resp) = ui.allocate_exact_size(vec2(width, 20.0), Sense::click());
+            if resp.hovered() {
+                ui.painter().rect_filled(r, 2.0, t.control_hover.gamma_multiply(0.5));
+            }
+            lw_sample(ui.painter(), Rect::from_min_size(pos2(r.left() + 3.0, r.top()), vec2(22.0, r.height())), current, t.text);
+            ui.painter().text(
+                pos2(r.left() + 30.0, r.center().y),
+                egui::Align2::LEFT_CENTER,
+                crate::i18n::t(&current.name()),
+                crate::theme::body(),
+                t.text,
+            );
+            resp
+        })
+        .inner;
+    let mut out = None;
+    egui::Popup::from_toggle_button_response(&resp).id(id).width(170.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            let by_opts: Vec<Lineweight> = if by { vec![Lineweight::ByLayer, Lineweight::ByBlock] } else { Vec::new() };
+            let opts =
+                by_opts.into_iter().chain(std::iter::once(Lineweight::Default)).chain(Lineweight::STANDARD.iter().map(|v| Lineweight::Mm100(*v)));
+            for lw in opts {
+                let (r, resp) = ui.allocate_exact_size(vec2(160.0, 20.0), Sense::click());
+                if resp.hovered() || lw == current {
+                    ui.painter().rect_filled(r, 2.0, t.accent.gamma_multiply(if resp.hovered() { 0.6 } else { 0.3 }));
+                }
+                lw_sample(ui.painter(), Rect::from_min_size(pos2(r.left() + 4.0, r.top()), vec2(40.0, r.height())), lw, t.text);
+                ui.painter().text(
+                    pos2(r.left() + 52.0, r.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    crate::i18n::t(&lw.name()),
+                    crate::theme::body(),
+                    t.text,
+                );
+                if resp.clicked() {
+                    out = Some(lw);
+                    ui.close();
+                }
+            }
+        });
+    });
+    out
+}
+
 /// Status column: a green check for the current layer, a sheet for the others.
 fn status_icon(p: &egui::Painter, r: Rect, current: bool, used: bool) {
     if current {
@@ -513,109 +662,23 @@ fn row(
         actions.push(("layer.set", json!({ "name": name, "color": c.name() })));
     }
     // Linetype.
-    let lt_resp = ui
-        .allocate_ui(vec2(130.0, 20.0), |ui| {
-            let (r, resp) = ui.allocate_exact_size(vec2(130.0, 20.0), Sense::click());
-            if resp.hovered() {
-                ui.painter().rect_filled(r, 2.0, t.control_hover.gamma_multiply(0.5));
-            }
-            lt_sample(
-                ui.painter(),
-                Rect::from_min_size(pos2(r.left() + 3.0, r.top()), vec2(30.0, r.height())),
-                linetypes.iter().find(|x| x.name.eq_ignore_ascii_case(&l.linetype)),
-                t.text,
-            );
-            ui.painter().text(pos2(r.left() + 38.0, r.center().y), egui::Align2::LEFT_CENTER, &l.linetype, crate::theme::body(), t.text);
-            resp
-        })
-        .inner;
-    egui::Popup::from_toggle_button_response(&lt_resp)
-        .id(egui::Id::unique(("lpm_lt", &name)))
-        .width(240.0)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            ui.label(RichText::new(crate::tl!("Loaded linetypes")).small().color(t.text_dim));
-            for lt in linetypes.iter().filter(|x| !["bylayer", "byblock"].contains(&x.name.to_ascii_lowercase().as_str())) {
-                let (r, resp) = ui.allocate_exact_size(vec2(230.0, 20.0), Sense::click());
-                if resp.hovered() || lt.name.eq_ignore_ascii_case(&l.linetype) {
-                    ui.painter().rect_filled(r, 2.0, t.accent.gamma_multiply(if resp.hovered() { 0.6 } else { 0.3 }));
-                }
-                lt_sample(ui.painter(), Rect::from_min_size(pos2(r.left() + 4.0, r.top()), vec2(50.0, r.height())), Some(lt), t.text);
-                ui.painter().text(pos2(r.left() + 62.0, r.center().y), egui::Align2::LEFT_CENTER, &lt.name, crate::theme::body(), t.text);
-                if resp.on_hover_text(&lt.description).clicked() {
-                    actions.push(("layer.set", json!({ "name": name, "linetype": lt.name })));
-                    ui.close();
-                }
-            }
-            if !library.is_empty() {
-                ui.separator();
-                ui.menu_button("Load...", |ui| {
-                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                        for n in library {
-                            if ui.button(n).clicked() {
-                                actions.push(("linetype", json!({ "load": n })));
-                                actions.push(("layer.set", json!({ "name": name, "linetype": n })));
-                                ui.close();
-                            }
-                        }
-                    });
-                    ui.separator();
-                    if ui.button(crate::tl!("Load all")).clicked() {
-                        actions.push(("linetype", json!({ "load": "*" })));
-                        ui.close();
-                    }
-                });
-            }
-        });
+    match linetype_button(ui, egui::Id::unique(("lpm_lt", &name)), &l.linetype, linetypes, library, None, 130.0) {
+        Some(LinetypePick::Name(n)) => actions.push(("layer.set", json!({ "name": name, "linetype": n }))),
+        Some(LinetypePick::LoadAndSet(n)) => {
+            actions.push(("linetype", json!({ "load": n.clone() })));
+            actions.push(("layer.set", json!({ "name": name, "linetype": n })));
+        }
+        Some(LinetypePick::LoadAll) => actions.push(("linetype", json!({ "load": "*" }))),
+        None => {}
+    }
     // Lineweight.
-    let lw_resp = ui
-        .allocate_ui(vec2(100.0, 20.0), |ui| {
-            let (r, resp) = ui.allocate_exact_size(vec2(100.0, 20.0), Sense::click());
-            if resp.hovered() {
-                ui.painter().rect_filled(r, 2.0, t.control_hover.gamma_multiply(0.5));
-            }
-            lw_sample(ui.painter(), Rect::from_min_size(pos2(r.left() + 3.0, r.top()), vec2(22.0, r.height())), l.lineweight, t.text);
-            ui.painter().text(
-                pos2(r.left() + 30.0, r.center().y),
-                egui::Align2::LEFT_CENTER,
-                crate::i18n::t(&l.lineweight.name()),
-                crate::theme::body(),
-                t.text,
-            );
-            resp
-        })
-        .inner;
-    egui::Popup::from_toggle_button_response(&lw_resp)
-        .id(egui::Id::unique(("lpm_lw", &name)))
-        .width(170.0)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                let opts = std::iter::once(Lineweight::Default).chain(Lineweight::STANDARD.iter().map(|v| Lineweight::Mm100(*v)));
-                for lw in opts {
-                    let (r, resp) = ui.allocate_exact_size(vec2(160.0, 20.0), Sense::click());
-                    if resp.hovered() || lw == l.lineweight {
-                        ui.painter().rect_filled(r, 2.0, t.accent.gamma_multiply(if resp.hovered() { 0.6 } else { 0.3 }));
-                    }
-                    lw_sample(ui.painter(), Rect::from_min_size(pos2(r.left() + 4.0, r.top()), vec2(40.0, r.height())), lw, t.text);
-                    ui.painter().text(
-                        pos2(r.left() + 52.0, r.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        crate::i18n::t(&lw.name()),
-                        crate::theme::body(),
-                        t.text,
-                    );
-                    if resp.clicked() {
-                        let v = match lw {
-                            Lineweight::Mm100(v) => json!(f64::from(v) / 100.0),
-                            _ => json!("Default"),
-                        };
-                        actions.push(("layer.set", json!({ "name": name, "lineweight": v })));
-                        ui.close();
-                    }
-                }
-            });
-        });
+    if let Some(lw) = lineweight_button(ui, egui::Id::unique(("lpm_lw", &name)), l.lineweight, false, 100.0) {
+        let v = match lw {
+            Lineweight::Mm100(v) => json!(f64::from(v) / 100.0),
+            _ => json!("Default"),
+        };
+        actions.push(("layer.set", json!({ "name": name, "lineweight": v })));
+    }
     // Transparency (commits when the drag or edit ends).
     let tid = egui::Id::unique(("lpm_tr", &name));
     let mut tr = ui.data_mut(|d| d.get_temp::<u8>(tid)).unwrap_or(l.transparency);

@@ -310,6 +310,36 @@ enum Field {
     /// A block-or-none choice (MLEADERSTYLE's default content block): `None` shows as
     /// `"(MText)"` and is sent as JSON `null`; `Some(name)` is sent as that block name.
     BlockChoice(&'static str, &'static str, Option<String>, Vec<String>),
+    /// A colour field (DIMCLRD/DIMCLRE/DIMCLRT): the Layer Manager's own colour swatch popup
+    /// (ACI palette + true colour), reused as-is via `layers::color_button`.
+    Color(&'static str, &'static str, cadcraft_color::Color),
+    /// An arrowhead/leader block name: the empty/default value (closed filled or inherit
+    /// DIMBLK for per-end arrows) is shown as `none_label` and sent as JSON `""` (unlike
+    /// `BlockChoice`'s MText default, which is `null`).
+    ArrowBlock(&'static str, &'static str, &'static str, String, Vec<String>),
+    /// A linetype name (DIMLTYPE/DIMLTEX1/DIMLTEX2): `""` is ByBlock. Reuses the Layer Manager's
+    /// own linetype preview popup via `layers::linetype_button` (no Load submenu here — only
+    /// linetypes already loaded in the drawing are offered, same as the Properties palette).
+    Linetype(&'static str, &'static str, String, Vec<cadcraft_doc::Linetype>),
+    /// A lineweight (DIMLWD/DIMLWE): ByLayer/ByBlock/Default/0..=211 (1/100 mm), reusing the
+    /// Layer Manager's own lineweight popup via `layers::lineweight_button`.
+    Weight(&'static str, &'static str, cadcraft_doc::Lineweight),
+}
+
+impl Field {
+    /// The immediate-apply style manager's wire value, shared by picker commits and tests.
+    fn picker_value(&self) -> Option<(&'static str, Value)> {
+        match self {
+            Self::Color(key, _, color) => Some((key, json!(color.name()))),
+            Self::ArrowBlock(key, _, _, name, _) | Self::Linetype(key, _, name, _) => Some((key, json!(name))),
+            Self::Weight(key, _, weight) => Some((key, json!(weight.to_dxf()))),
+            _ => None,
+        }
+    }
+}
+
+fn style_change(cmd: &'static str, name: &str, key: &str, value: Value) -> (&'static str, Value) {
+    (cmd, json!({ "name": name, key: value, "current": false }))
 }
 
 struct Style {
@@ -404,10 +434,8 @@ fn mleader_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Acti
 
 /// Numeric (incl. 0/255 small-integer) field, label, DimStyle field accessor.
 type DimField = (&'static str, &'static str, fn(&cadcraft_doc::DimStyle) -> f64);
-/// Fields shown as plain numbers: covers most of DimStyle's variables, but not colours, block/
-/// linetype names or lineweights (those need pickers this dialog doesn't have yet, see F7 in
-/// docs/gaps.md) — so this isn't yet AutoCAD's full 7-tab Lines/Symbols/Text/Fit/Primary/
-/// Alternate/Tolerances layout, just one flat field list reusing the existing style manager.
+/// Fields shown as plain numbers. The dialog remains a flat list, not the full seven-tab
+/// Lines/Symbols/Text/Fit/Primary/Alternate/Tolerances layout; enum dropdowns are still pending.
 const DIM_NUM_FIELDS: &[DimField] = &[
     ("scale", "Overall scale (DIMSCALE)", |s| s.scale),
     ("arrowSize", "Arrowhead size", |s| s.arrow_size),
@@ -467,6 +495,47 @@ const DIM_BOOL_FIELDS: &[(&str, &str, fn(&cadcraft_doc::DimStyle) -> bool)] = &[
     ("fixedExt", "Fixed-length extension lines", |s| s.fixed_ext),
     ("alt", "Show alternate units", |s| s.alt),
 ];
+/// Colour fields (DIMCLRD/DIMCLRE/DIMCLRT): key, label, `DimStyle` field accessor.
+type DimPickerField<T> = (&'static str, &'static str, fn(&cadcraft_doc::DimStyle) -> T);
+type DimArrowField = (&'static str, &'static str, &'static str, fn(&cadcraft_doc::DimStyle) -> String);
+const DIM_COLOR_FIELDS: &[DimPickerField<cadcraft_color::Color>] = &[
+    ("dimLineColor", "Dimension line color (DIMCLRD)", |s| s.dim_line_color),
+    ("extLineColor", "Extension line color (DIMCLRE)", |s| s.ext_line_color),
+    ("textColor", "Text color (DIMCLRT)", |s| s.text_color),
+];
+/// Arrowhead/leader block fields (DIMBLK/DIMBLK1/DIMBLK2/DIMLDRBLK): key, label, none-label,
+/// `DimStyle` field accessor. Empty per-end names inherit DIMBLK; other empty names use closed filled.
+const DIM_ARROW_FIELDS: &[DimArrowField] = &[
+    ("arrowBlock", "Arrowhead block (DIMBLK)", "(Closed filled)", |s| s.arrow_block.clone()),
+    ("arrowBlock1", "Arrowhead 1 block (DIMBLK1)", "(Use DIMBLK)", |s| s.arrow_block1.clone()),
+    ("arrowBlock2", "Arrowhead 2 block (DIMBLK2)", "(Use DIMBLK)", |s| s.arrow_block2.clone()),
+    ("leaderArrowBlock", "Leader arrowhead block (DIMLDRBLK)", "(Closed filled)", |s| s.leader_arrow_block.clone()),
+];
+/// Linetype fields (DIMLTYPE/DIMLTEX1/DIMLTEX2): key, label, `DimStyle` field accessor. `""` is
+/// ByBlock.
+const DIM_LINETYPE_FIELDS: &[DimPickerField<String>] = &[
+    ("dimLinetype", "Dimension line linetype (DIMLTYPE)", |s| s.dim_linetype.clone()),
+    ("extLinetype1", "Extension line 1 linetype (DIMLTEX1)", |s| s.ext_linetype1.clone()),
+    ("extLinetype2", "Extension line 2 linetype (DIMLTEX2)", |s| s.ext_linetype2.clone()),
+];
+/// Lineweight fields (DIMLWD/DIMLWE): key, label, `DimStyle` field accessor.
+const DIM_LINEWEIGHT_FIELDS: &[DimPickerField<cadcraft_doc::Lineweight>] = &[
+    ("dimLineweight", "Dimension line lineweight (DIMLWD)", |s| cadcraft_doc::Lineweight::from_dxf(s.dim_lineweight)),
+    ("extLineweight", "Extension line lineweight (DIMLWE)", |s| cadcraft_doc::Lineweight::from_dxf(s.ext_lineweight)),
+];
+
+/// Build the dialog's underlying picker state directly from the drawing tables.
+fn dimstyle_fields(s: &cadcraft_doc::DimStyle, text_styles: &[String], block_names: &[String], linetypes: &[cadcraft_doc::Linetype]) -> Vec<Field> {
+    let mut fields: Vec<Field> = DIM_NUM_FIELDS.iter().map(|(key, label, get)| Field::Num(key, label, get(s))).collect();
+    fields.push(Field::Choice("textStyle", "Text style", s.text_style.clone(), text_styles.to_vec()));
+    fields.extend(DIM_BOOL_FIELDS.iter().map(|(key, label, get)| Field::Bool(key, label, get(s))));
+    fields.extend(DIM_COLOR_FIELDS.iter().map(|(key, label, get)| Field::Color(key, label, get(s))));
+    fields
+        .extend(DIM_ARROW_FIELDS.iter().map(|(key, label, none_label, get)| Field::ArrowBlock(key, label, none_label, get(s), block_names.to_vec())));
+    fields.extend(DIM_LINETYPE_FIELDS.iter().map(|(key, label, get)| Field::Linetype(key, label, get(s), linetypes.to_vec())));
+    fields.extend(DIM_LINEWEIGHT_FIELDS.iter().map(|(key, label, get)| Field::Weight(key, label, get(s))));
+    fields
+}
 
 fn dimstyle(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
     let Ok(d) = app.session.doc() else {
@@ -474,16 +543,10 @@ fn dimstyle(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
         return None;
     };
     let text_styles: Vec<String> = d.text_styles.iter().map(|s| s.name.clone()).collect();
-    let mut styles: Vec<Style> = d
-        .dim_styles
-        .iter()
-        .map(|s| {
-            let mut fields: Vec<Field> = DIM_NUM_FIELDS.iter().map(|(key, label, get)| Field::Num(key, label, get(s))).collect();
-            fields.push(Field::Choice("textStyle", "Text style", s.text_style.clone(), text_styles.clone()));
-            fields.extend(DIM_BOOL_FIELDS.iter().map(|(key, label, get)| Field::Bool(key, label, get(s))));
-            Style { name: s.name.clone(), fields }
-        })
-        .collect();
+    let block_names: Vec<String> = d.blocks.values().filter(|b| !b.name.starts_with('*')).map(|b| b.name.clone()).collect();
+    let linetypes: Vec<cadcraft_doc::Linetype> = d.linetypes.clone();
+    let mut styles: Vec<Style> =
+        d.dim_styles.iter().map(|s| Style { name: s.name.clone(), fields: dimstyle_fields(s, &text_styles, &block_names, &linetypes) }).collect();
     if styles.is_empty() {
         let s = cadcraft_doc::DimStyle::default();
         styles.push(Style { name: s.name, fields: Vec::new() });
@@ -579,9 +642,45 @@ fn style_manager(ctx: &egui::Context, open: &mut bool, title: &str, cmd: &'stati
                                 });
                                 picked.map(|c| (*key, c.map_or(Value::Null, |c| json!(c))))
                             }
+                            Field::Color(key, label, v) => {
+                                ui.label(*label);
+                                let id = ui.make_persistent_id((cmd, &style.name, *key));
+                                crate::layers::color_button(ui, id, *v, true, 140.0).and_then(|c| Field::Color(key, label, c).picker_value())
+                            }
+                            Field::ArrowBlock(key, label, none_label, v, choices) => {
+                                let field_label = ui.label(*label);
+                                let shown = if v.is_empty() { none_label } else { v.as_str() };
+                                let mut picked = None;
+                                let combo = egui::ComboBox::from_id_salt((cmd, &style.name, *key)).selected_text(shown).show_ui(ui, |ui| {
+                                    if ui.selectable_label(v.is_empty(), *none_label).clicked() && !v.is_empty() {
+                                        picked = Some(String::new());
+                                    }
+                                    for c in choices {
+                                        if ui.selectable_label(v == c, c).clicked() && v != c {
+                                            picked = Some(c.clone());
+                                        }
+                                    }
+                                });
+                                combo.response.labelled_by(field_label.id);
+                                picked.and_then(|c| Field::ArrowBlock(key, label, none_label, c, Vec::new()).picker_value())
+                            }
+                            Field::Linetype(key, label, v, linetypes) => {
+                                ui.label(*label);
+                                let id = ui.make_persistent_id((cmd, &style.name, *key));
+                                match crate::layers::linetype_button(ui, id, v, linetypes, &[], Some("ByBlock"), 160.0) {
+                                    Some(crate::layers::LinetypePick::Name(n)) => Field::Linetype(key, label, n, Vec::new()).picker_value(),
+                                    // No library passed in, so Load variants never fire here.
+                                    _ => None,
+                                }
+                            }
+                            Field::Weight(key, label, v) => {
+                                ui.label(*label);
+                                let id = ui.make_persistent_id((cmd, &style.name, *key));
+                                crate::layers::lineweight_button(ui, id, *v, true, 140.0).and_then(|lw| Field::Weight(key, label, lw).picker_value())
+                            }
                         };
                         if let Some((key, v)) = change {
-                            action = Some((cmd, json!({ "name": style.name, key: v, "current": false })));
+                            action = Some(style_change(cmd, &style.name, key, v));
                         }
                         ui.end_row();
                     }
@@ -1452,6 +1551,123 @@ mod dimstyle_dialog_tests {
         let st = app.session.doc().unwrap().dim_styles.iter().find(|s| s.name == "Standard").cloned().unwrap();
         assert_eq!(st.center_mark, -2.5, "negative centre-mark (lines) must reach the style");
         assert!(st.tolerance);
+        ctx.run_ui(egui::RawInput::default(), |ui| dialog(&mut app, ui.ctx(), "dimstyle", &mut open)).drop_without_applying_deltas();
+        assert!(open);
+    }
+
+    /// All twelve fields F7 named as missing UI (colours DIMCLRD/E/T, arrowhead/leader blocks
+    /// DIMBLK/DIMBLK1/DIMBLK2/DIMLDRBLK, linetypes DIMLTYPE/DIMLTEX1/DIMLTEX2 and lineweights
+    /// DIMLWD/DIMLWE) now render as pickers reusing the Layer Manager's own colour/linetype/
+    /// lineweight widgets (`layers::color_button`/`linetype_button`/`lineweight_button`) and the
+    /// Multileader Style dialog's block-choice combo pattern. This proves each field round-trips
+    /// through the real `dimstyle` command (not a dialog-local copy) and that the dialog renders
+    /// with a loaded linetype and a user block present (exercising the non-default picker rows)
+    /// without panicking.
+    #[test]
+    fn dialog_renders_and_round_trips_all_twelve_picker_fields() {
+        let mut app = CadApp::new(Session::new(), crate::Services::default());
+        // A loaded (non-default) linetype and a user block, so the new pickers have real choices
+        // besides the built-in ByLayer/ByBlock/"(Closed filled)" defaults.
+        app.run("linetype", json!({"load": "DASHED"})).unwrap();
+        app.run("point", json!({"at": [0.0, 0.0]})).unwrap();
+        let pt = app.session.doc().unwrap().model.iter().next().unwrap().handle.hex();
+        app.run("block", json!({"name": "MyArrow", "base": [0.0, 0.0], "handles": [pt], "keep": "retain"})).unwrap();
+
+        route(&mut app, "dimstyle", &Value::Null).unwrap().unwrap();
+        let ctx = egui::Context::default();
+        let mut open = true;
+        ctx.run_ui(egui::RawInput::default(), |ui| dialog(&mut app, ui.ctx(), "dimstyle", &mut open)).drop_without_applying_deltas();
+        assert!(open, "dialog must render all twelve new picker fields without panicking");
+
+        let mut fields = {
+            let d = app.session.doc().unwrap();
+            dimstyle_fields(&d.dim_styles[0], &[], &["MyArrow".into()], &d.linetypes)
+        };
+        let mut applied = 0;
+        for field in &mut fields {
+            match field {
+                Field::Color(key, _, color) => {
+                    *color = match *key {
+                        "dimLineColor" => cadcraft_color::Color::Index(1),
+                        "extLineColor" => cadcraft_color::Color::True(cadcraft_color::Rgb(12, 34, 56)),
+                        _ => cadcraft_color::Color::ByLayer,
+                    };
+                }
+                Field::ArrowBlock(_, _, _, name, _) => *name = "MyArrow".into(),
+                Field::Linetype(_, _, name, _) => *name = "DASHED".into(),
+                Field::Weight(key, _, weight) => {
+                    *weight = if *key == "dimLineweight" { cadcraft_doc::Lineweight::ByLayer } else { cadcraft_doc::Lineweight::Mm100(25) };
+                }
+                _ => continue,
+            }
+            // Exactly the typed picker conversion and immediate-apply action used by the dialog.
+            let (key, value) = field.picker_value().unwrap();
+            let (cmd, params) = style_change("dimstyle", "Standard", key, value);
+            let result = app.run(cmd, params).unwrap();
+            assert!(result.get("ignored").is_none(), "{key}: {result}");
+            applied += 1;
+        }
+        assert_eq!(applied, 12, "F7's enumerated variables total twelve, not eleven");
+        let st = app.session.doc().unwrap().dim_styles.iter().find(|s| s.name == "Standard").cloned().unwrap();
+        assert_eq!(st.dim_line_color, cadcraft_color::Color::Index(1), "DIMCLRD");
+        assert_eq!(st.ext_line_color, cadcraft_color::Color::True(cadcraft_color::Rgb(12, 34, 56)), "DIMCLRE");
+        assert_eq!(st.text_color, cadcraft_color::Color::ByLayer, "DIMCLRT");
+        assert_eq!(st.arrow_block, "MyArrow", "DIMBLK");
+        assert_eq!(st.arrow_block1, "MyArrow", "DIMBLK1");
+        assert_eq!(st.arrow_block2, "MyArrow", "DIMBLK2");
+        assert_eq!(st.leader_arrow_block, "MyArrow", "DIMLDRBLK");
+        assert_eq!(st.dim_linetype, "DASHED", "DIMLTYPE");
+        assert_eq!(st.ext_linetype1, "DASHED", "DIMLTEX1");
+        assert_eq!(st.ext_linetype2, "DASHED", "DIMLTEX2");
+        assert_eq!(st.dim_lineweight, -1, "DIMLWD (ByLayer)");
+        assert_eq!(st.ext_lineweight, 25, "DIMLWE (0.25mm)");
+        let reloaded = {
+            let d = app.session.doc().unwrap();
+            dimstyle_fields(&st, &[], &["MyArrow".into()], &d.linetypes)
+        };
+        for (edited, reopened) in fields.iter().zip(&reloaded) {
+            assert_eq!(edited.picker_value(), reopened.picker_value());
+        }
+        // Clear every block/linetype and exercise both remaining logical lineweights.
+        for field in &mut fields {
+            match field {
+                Field::ArrowBlock(_, _, _, name, _) | Field::Linetype(_, _, name, _) => name.clear(),
+                Field::Weight(key, _, weight) => {
+                    *weight = if *key == "dimLineweight" { cadcraft_doc::Lineweight::ByBlock } else { cadcraft_doc::Lineweight::Default };
+                }
+                _ => continue,
+            }
+            let (key, value) = field.picker_value().unwrap();
+            let (cmd, params) = style_change("dimstyle", "Standard", key, value);
+            app.run(cmd, params).unwrap();
+        }
+        let cleared = app.session.doc().unwrap().dim_style("Standard").unwrap();
+        assert!(
+            cleared.arrow_block.is_empty()
+                && cleared.arrow_block1.is_empty()
+                && cleared.arrow_block2.is_empty()
+                && cleared.leader_arrow_block.is_empty()
+        );
+        assert!(cleared.dim_linetype.is_empty() && cleared.ext_linetype1.is_empty() && cleared.ext_linetype2.is_empty());
+        assert_eq!((cleared.dim_lineweight, cleared.ext_lineweight), (-2, -3));
+
+        // Check the new rows' real layout/accessibility; optionally render them for visual review.
+        let shot = std::env::var_os("CADCRAFT_DIMSTYLE_SHOT");
+        let styles = vec![Style { name: "Standard".into(), fields: reloaded.into_iter().filter(|f| f.picker_value().is_some()).collect() }];
+        let builder = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0));
+        let builder = if shot.is_some() { builder.wgpu() } else { builder };
+        let mut harness = builder.build_ui(move |ui| {
+            crate::theme::apply(ui.ctx(), egui::Theme::Dark, false);
+            let mut open = true;
+            let _ = style_manager(ui.ctx(), &mut open, "Dimension Style Manager", "dimstyle", "Standard", &styles);
+        });
+        harness.run_steps(3);
+        if let Some(path) = shot {
+            harness.render().unwrap().save(std::path::PathBuf::from(path)).unwrap();
+        }
+
+        // The dialog must still render with these non-default values (loaded linetype swatch,
+        // named arrow block, ByBlock/explicit colours) present in every new picker row.
         ctx.run_ui(egui::RawInput::default(), |ui| dialog(&mut app, ui.ctx(), "dimstyle", &mut open)).drop_without_applying_deltas();
         assert!(open);
     }
