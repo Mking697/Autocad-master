@@ -1,15 +1,17 @@
 //! BPARAMETER and BACTIONTOOL: author one parameter and its paired action into the block being
-//! edited (BEDIT). This build authors exactly two pairs (`docs/gaps.md`'s Top-10 #4 / F3's
-//! vertical slices): a Linear parameter with a Stretch action, and a Point parameter with a Move
-//! action — JSON-command-only, no draggable block-editor graphics yet. BSAVE/BSAVEAS regenerate
-//! the block's dynamic-block data from what is stored here (`cadcraft_doc::dynblock::author_*`),
+//! edited (BEDIT). This build authors three vertical slices (`docs/gaps.md`'s Top-10 #4 / F3): a
+//! Linear parameter with a Stretch action, a Point parameter with a Move action, and a Visibility
+//! parameter (no paired action — a reference's Visibility State property drives it directly) —
+//! JSON-command-only, no draggable block-editor graphics yet. BSAVE/BSAVEAS regenerate the
+//! block's dynamic-block data from what is stored here (`cadcraft_doc::dynblock::author_*`),
 //! since nothing else keeps it between saves.
 
-use cadcraft_doc::dynblock::{LinearParam, MoveAction, PointParam, StretchAction};
+use cadcraft_doc::dynblock::{LinearParam, MoveAction, PointParam, StretchAction, VisibilityParam, VisibilityStateDef};
 use serde_json::{Value, json};
 
 use super::bedit::editing;
 use crate::blockedit::{PendingAction, PendingParam};
+use crate::cmd::curves::handle_value;
 use crate::cmd::helpers::v3;
 use crate::cmd::{CommandSpec, bad, bool_or, point_req, points_param, str_param, targets};
 use crate::{Result, Session};
@@ -20,7 +22,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
             .menu(&["Tools", "Block Editor", "Parameter", "Linear"])
             .alias(&["param"])
             .params(
-                "{type: \"linear\" | \"point\" (default \"linear\"), base: [x,y], end: [x,y], label? (default \"Distance1\"), description?, fromMidpoint?: bool (default false)} for linear; {type: \"point\", at: [x,y], label? (default \"Position1\"), description?} for point → {node}",
+                "{type: \"linear\" | \"point\" | \"visibility\" (default \"linear\"), base: [x,y], end: [x,y], label? (default \"Distance1\"), description?, fromMidpoint?: bool (default false)} for linear; {type: \"point\", at: [x,y], label? (default \"Position1\"), description?} for point; {type: \"visibility\", at: [x,y], label? (default \"Visibility1\"), description?, controlled?: [handle,…] (default the current selection), states: [{name, visible: [handle,…]}, …] (at least 2)} for visibility → {node}",
             )
             .enabled(editing),
         CommandSpec::new("bactiontool", "Action Tool", run_bactiontool)
@@ -67,8 +69,37 @@ fn run_bparameter(s: &mut Session, p: &Value) -> Result<Value> {
             label: str_param(p, "label").unwrap_or("Position1").trim().to_string(),
             description: str_param(p, "description").unwrap_or("").to_string(),
         })
+    } else if kind.eq_ignore_ascii_case("visibility") {
+        let at = point_req(cmd, p, "at")?;
+        let controlled = targets(s, p)?;
+        let states_val =
+            p.get("states").and_then(Value::as_array).ok_or_else(|| bad(cmd, "`states` (at least 2, each {name, visible}) is required"))?;
+        if states_val.len() < 2 {
+            return Err(bad(cmd, "`states` needs at least 2 entries"));
+        }
+        let mut states = Vec::with_capacity(states_val.len());
+        for st in states_val {
+            let name = st.get("name").and_then(Value::as_str).ok_or_else(|| bad(cmd, "each state needs a `name`"))?.trim().to_string();
+            if name.is_empty() {
+                return Err(bad(cmd, "a state's `name` must not be empty"));
+            }
+            let visible = st
+                .get("visible")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().map(handle_value).collect::<Option<Vec<_>>>())
+                .unwrap_or(Some(Vec::new()))
+                .ok_or_else(|| bad(cmd, "a state's `visible` must be an array of object handles"))?;
+            states.push(VisibilityStateDef { name, visible });
+        }
+        PendingParam::Visibility(VisibilityParam {
+            at: v3(at),
+            label: str_param(p, "label").unwrap_or("Visibility1").trim().to_string(),
+            description: str_param(p, "description").unwrap_or("").to_string(),
+            controlled,
+            states,
+        })
     } else {
-        return Err(bad(cmd, "`type` must be \"linear\" or \"point\" (the only types this build can author)"));
+        return Err(bad(cmd, "`type` must be \"linear\", \"point\" or \"visibility\" (the only types this build can author)"));
     };
     let st = s.state_mut()?;
     let be = st.block_edit.as_mut().ok_or_else(|| bad(cmd, "The Block Editor is not open."))?;

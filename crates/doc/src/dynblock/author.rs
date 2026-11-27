@@ -87,11 +87,38 @@ pub struct MoveAction {
     pub name: String,
 }
 
+/// A named set of visible objects, part of a [`VisibilityParam`]: the state's name and which of
+/// the parameter's `controlled` objects are shown in it (the rest are hidden). This slice leaves
+/// a state's "active" list (other parameters/actions shown only in this state) empty — every
+/// other parameter stays visible in every state, matching a block with no further authoring.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VisibilityStateDef {
+    pub name: String,
+    pub visible: Vec<Handle>,
+}
+
+/// A Visibility parameter to author: named states that show or hide `controlled`'s objects — no
+/// paired action (a reference's Visibility State property drives it directly, through
+/// [`super::set_property`]/[`super::drag_grip`]'s existing Visibility handling, which already
+/// reads this shape from other programs' files).
+#[derive(Clone, Debug, PartialEq)]
+pub struct VisibilityParam {
+    pub at: Vec3,
+    /// The property name a reference's Properties palette shows ("Visibility1").
+    pub label: String,
+    pub description: String,
+    /// Every object the parameter controls (shown in some states, hidden in others).
+    pub controlled: Vec<Handle>,
+    pub states: Vec<VisibilityStateDef>,
+}
+
 /// Why [`author_linear_stretch`] would refuse to author into block `name`, if it would.
 fn refusal(d: &Drawing, name: &str) -> Option<String> {
     let key = ("BLOCK_RECORD".to_string(), name.trim().to_ascii_uppercase());
     let has_data = super::dynamic_block(d, name).is_some() || d.foreign.records.get(&key).is_some_and(|x| x.xdict.is_some());
-    has_data.then(|| format!("\"{name}\" already has dynamic-block data; this build can only author a fresh Linear parameter and Stretch action."))
+    has_data.then(|| {
+        format!("\"{name}\" already has dynamic-block data; this build can only author a fresh parameter (and, when it pairs with one, action).")
+    })
 }
 
 fn parameter_object(handle: Handle, owner: Handle, p: &LinearParam) -> ForeignObject {
@@ -194,6 +221,39 @@ fn move_object(handle: Handle, owner: Handle, at: Vec3, a: &MoveAction) -> Forei
     ForeignObject { handle, kind: "BLOCKMOVEACTION".into(), tags }
 }
 
+/// A grip id is required for every state, even a block with no further authoring (AutoCAD shows
+/// the triangle at this fixed position; which objects it lists comes from [`super::grips`]'s own
+/// `shown`/`choices` logic, not this id).
+fn visibility_object(handle: Handle, owner: Handle, p: &VisibilityParam) -> ForeignObject {
+    let mut tags = vec![tag(5, handle.hex()), tag(330, owner.hex())];
+    tags.push(tag(100, "AcDbEvalExpr"));
+    tags.push(tag(90, PARAM_NODE.to_string()));
+    tags.push(tag(100, "AcDbBlockElement"));
+    tags.push(tag(300, "Visibility1"));
+    tags.push(tag(100, "AcDbBlockParameter"));
+    tags.push(tag(280, "1")); // shown in the Properties palette
+    tags.push(tag(100, "AcDbBlock1PtParameter"));
+    tags.extend(point_tags(1010, p.at));
+    tags.push(tag(93, "30")); // the parameter's own list grip id
+    tags.push(tag(100, "AcDbBlockVisibilityParameter"));
+    tags.push(tag(301, p.label.clone()));
+    tags.push(tag(302, p.description.clone()));
+    tags.push(tag(93, p.controlled.len().to_string()));
+    for h in &p.controlled {
+        tags.push(tag(331, h.hex()));
+    }
+    tags.push(tag(92, p.states.len().to_string()));
+    for s in &p.states {
+        tags.push(tag(303, s.name.clone()));
+        tags.push(tag(94, s.visible.len().to_string()));
+        for h in &s.visible {
+            tags.push(tag(332, h.hex()));
+        }
+        tags.push(tag(95, "0")); // no parameters/actions listed active only in this state
+    }
+    ForeignObject { handle, kind: "BLOCKVISIBILITYPARAMETER".into(), tags }
+}
+
 fn graph_object(handle: Handle, owner: Handle, members: &[Handle]) -> ForeignObject {
     let mut tags = vec![tag(5, handle.hex()), tag(330, owner.hex()), tag(100, "AcDbEvalGraph")];
     tags.extend(members.iter().map(|m| tag(360, m.hex())));
@@ -292,6 +352,28 @@ pub fn author_point_move(d: &mut Drawing, name: &str, param: &PointParam, action
         members.push(action_h);
     }
     finish(d, key, record_handle, graph, objects, members);
+    Ok(())
+}
+
+/// Author `param` (graph id 1, no paired action) into block `name`'s dynamic-block data: named
+/// states that show or hide its controlled objects. An error, changing nothing, when the block
+/// already has dynamic-block data, it controls no objects, or it has fewer than two states (one
+/// state can't be switched to anything else, so it would author dead data).
+pub fn author_visibility(d: &mut Drawing, name: &str, param: &VisibilityParam) -> Result<(), String> {
+    if let Some(why) = refusal(d, name) {
+        return Err(why);
+    }
+    if param.controlled.is_empty() {
+        return Err("The Visibility parameter needs at least one controlled object.".into());
+    }
+    if param.states.len() < 2 {
+        return Err("The Visibility parameter needs at least two states.".into());
+    }
+    let (record_handle, key) = record_and_key(d, name);
+    let graph = d.new_handle();
+    let param_h = d.new_handle();
+    let objects = vec![visibility_object(param_h, graph, param)];
+    finish(d, key, record_handle, graph, objects, vec![param_h]);
     Ok(())
 }
 
@@ -447,5 +529,48 @@ mod tests {
         let action = MoveAction { selection: vec![h2], name: "Move1".into() };
         let err = author_point_move(&mut d, "B", &point, Some(&action)).unwrap_err();
         assert!(err.contains("already has dynamic-block data"), "{err}");
+    }
+
+    #[test]
+    fn authored_visibility_data_reads_back_and_set_property_hides_the_controlled_line() {
+        let (mut d, h1, h2, r) = fixture();
+        let param = VisibilityParam {
+            at: Vec3::new(2.0, 0.0, 0.0),
+            label: "Visibility1".into(),
+            description: String::new(),
+            controlled: vec![h2],
+            states: vec![VisibilityStateDef { name: "On".into(), visible: vec![h2] }, VisibilityStateDef { name: "Off".into(), visible: Vec::new() }],
+        };
+        author_visibility(&mut d, "B", &param).unwrap();
+
+        let m = super::super::dynamic_block(&d, "B").expect("B is now a dynamic block");
+        assert_eq!(m.parameters.len(), 1);
+        assert_eq!(m.actions.len(), 0, "a Visibility parameter authors with no paired action");
+        let p = &m.parameters[0];
+        assert_eq!((p.node, p.element.as_str(), p.show_properties), (1, "Visibility1", true));
+        let super::super::ParameterKind::Visibility { label, controlled, states, .. } = &p.kind else { panic!("{p:?}") };
+        assert_eq!(label, "Visibility1");
+        assert_eq!(controlled, &[h2]);
+        assert_eq!(states.len(), 2);
+        assert_eq!((states[0].name.as_str(), states[0].visible.as_slice()), ("On", [h2].as_slice()));
+        assert_eq!((states[1].name.as_str(), states[1].visible.as_slice()), ("Off", [].as_slice()));
+
+        let (_, props) = super::super::custom_properties(&d, r).expect("custom properties");
+        let prop = props.iter().find(|p| p.name == "Visibility1").expect("Visibility1 property");
+        assert_eq!(prop.value, "On");
+        assert_eq!(prop.choices, ["On", "Off"]);
+
+        super::super::set_property(&mut d, r, "Visibility1", "Off").unwrap();
+        let name = match &d.entity(r).unwrap().kind {
+            EntityKind::Insert(i) => i.block.clone(),
+            _ => panic!(),
+        };
+        let b = d.block(&name).unwrap();
+        let controlled_copy =
+            b.entities.iter().find(|e| matches!(&e.kind, EntityKind::Line(l) if l.a.x == 2.0 && l.b.y == 1.0)).expect("the controlled line's copy");
+        assert!(!controlled_copy.common.visible, "the controlled line is hidden in the Off state");
+        let other = b.entities.iter().find(|e| matches!(&e.kind, EntityKind::Line(l) if l.a.x == 0.0)).expect("the other line's copy");
+        assert!(other.common.visible, "the uncontrolled line stays visible");
+        let _ = h1;
     }
 }

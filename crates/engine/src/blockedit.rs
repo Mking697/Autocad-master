@@ -52,6 +52,8 @@ pub fn has_authoring_elements(d: &Drawing) -> bool {
 pub enum PendingParam {
     Linear(cadcraft_doc::dynblock::LinearParam),
     Point(cadcraft_doc::dynblock::PointParam),
+    /// Pairs with no action (see [`cadcraft_doc::dynblock::author_visibility`]).
+    Visibility(cadcraft_doc::dynblock::VisibilityParam),
 }
 
 /// An action authored in this session (BACTIONTOOL), paired with [`PendingParam`]: a Stretch
@@ -315,9 +317,10 @@ impl DocState {
                 }
                 (PendingParam::Point(p), None) => cadcraft_doc::dynblock::author_point_move(&mut d, &record, p, None),
                 (PendingParam::Point(p), Some(PendingAction::Move(a))) => cadcraft_doc::dynblock::author_point_move(&mut d, &record, p, Some(a)),
-                (PendingParam::Linear(_), Some(PendingAction::Move(_))) | (PendingParam::Point(_), Some(PendingAction::Stretch(_))) => {
-                    Err("That action type doesn't pair with the authored parameter type.".into())
-                }
+                (PendingParam::Visibility(p), None) => cadcraft_doc::dynblock::author_visibility(&mut d, &record, p),
+                (PendingParam::Linear(_), Some(PendingAction::Move(_)))
+                | (PendingParam::Point(_), Some(PendingAction::Stretch(_)))
+                | (PendingParam::Visibility(_), Some(_)) => Err("That action type doesn't pair with the authored parameter type.".into()),
             };
             outcome.map_err(EngineError::Other)?;
         }

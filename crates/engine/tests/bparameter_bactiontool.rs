@@ -150,3 +150,63 @@ fn bparameter_point_bactiontool_move_bsave_round_trips_through_dxf_and_the_grip_
     let swung = swing(&reopened, &ins.block);
     assert_eq!((swung.a.x, swung.a.y, swung.b.x, swung.b.y), (5.0, 3.0, 5.0, 4.0), "the swing line moved by the drag");
 }
+
+#[test]
+fn bparameter_visibility_bsave_round_trips_through_dxf_and_set_property_hides_the_line() {
+    let (mut s, reference, _swing_in_block) = door_block();
+
+    // Edit the block: author a Visibility parameter with two states — "On" shows the swing line,
+    // "Off" hides it (the leaf's own width line is not controlled, so it stays visible either way).
+    s.execute("bedit", &json!({ "name": "DOOR2" })).unwrap();
+    let swing_in_editor = {
+        let b = s.doc().unwrap();
+        let l = b.model.iter().find(|e| matches!(&e.kind, EntityKind::Line(l) if l.a.x == 2.0 && l.b.y == 1.0)).unwrap();
+        l.handle
+    };
+    let r = s
+        .execute(
+            "bparameter",
+            &json!({
+                "type": "visibility",
+                "at": [2.0, 0.0],
+                "label": "Visibility1",
+                "handles": [swing_in_editor.hex()],
+                "states": [
+                    { "name": "On", "visible": [swing_in_editor.hex()] },
+                    { "name": "Off", "visible": [] },
+                ],
+            }),
+        )
+        .unwrap();
+    assert_eq!(r["node"], 1);
+    s.execute("bsave", &json!({})).unwrap();
+    s.execute("bclose", &json!({})).unwrap();
+
+    // In the same session, it already reads as a dynamic block with no paired action.
+    let m = dynblock::dynamic_block(s.doc().unwrap(), "DOOR2").expect("DOOR2 is now a dynamic block");
+    assert_eq!(m.parameters.len(), 1);
+    assert_eq!(m.actions.len(), 0, "a Visibility parameter authors with no paired action");
+
+    // The real proof: write it to DXF bytes and reparse them, exactly as a saved file reopens.
+    let dxf = cadcraft_io::write_dxf(s.doc().unwrap());
+    let reopened = cadcraft_io::read_dxf(dxf.as_bytes()).unwrap();
+    let m2 = dynblock::dynamic_block(&reopened, "DOOR2").expect("the dynamic block survives the DXF round trip");
+    assert_eq!(m2.parameters.len(), 1);
+    let p = &m2.parameters[0];
+    let dynblock::ParameterKind::Visibility { label, states, .. } = &p.kind else { panic!("{p:?}") };
+    assert_eq!(label, "Visibility1");
+    assert_eq!(states.len(), 2);
+    assert_eq!(states[0].name, "On");
+    assert_eq!(states[1].name, "Off");
+
+    // Setting Visibility1 to "Off" on the reopened reference hides the swing line and leaves the
+    // leaf's own width line (not a controlled object) alone.
+    let mut reopened = reopened;
+    dynblock::set_property(&mut reopened, reference, "Visibility1", "Off").unwrap();
+    let EntityKind::Insert(ins) = &reopened.entity(reference).unwrap().kind else { panic!("not a reference") };
+    let b = reopened.block(&ins.block).unwrap();
+    let hidden = b.entities.iter().find(|e| matches!(&e.kind, EntityKind::Line(l) if l.a.y != l.b.y)).expect("the swing line's copy");
+    assert!(!hidden.common.visible, "the swing line is hidden in the Off state");
+    let still_shown = b.entities.iter().find(|e| matches!(&e.kind, EntityKind::Line(l) if l.a.y == l.b.y)).expect("the width line's copy");
+    assert!(still_shown.common.visible, "the uncontrolled width line stays visible");
+}

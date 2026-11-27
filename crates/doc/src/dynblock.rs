@@ -24,7 +24,10 @@ mod author;
 mod grips;
 mod reference;
 pub use apply::{drag_grip, set_property};
-pub use author::{LinearParam, MoveAction, PointParam, StretchAction, author_linear_stretch, author_point_move};
+pub use author::{
+    LinearParam, MoveAction, PointParam, StretchAction, VisibilityParam, VisibilityStateDef, author_linear_stretch, author_point_move,
+    author_visibility,
+};
 pub use grips::{DynGrip, GripPart, GripShape, grips};
 pub use reference::{CustomProperty, Reference, Value, custom_properties, reference};
 
