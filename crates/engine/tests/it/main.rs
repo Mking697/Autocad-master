@@ -4,6 +4,7 @@ mod annotate_options;
 mod annotative;
 mod arc_ctrl_direction;
 mod array_commands;
+mod array_item_delete;
 mod assoc_array;
 mod attdef_modes;
 mod attdisp_attsync;

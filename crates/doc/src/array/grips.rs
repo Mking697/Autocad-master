@@ -125,7 +125,7 @@ pub fn array_grips(d: &Drawing, insert: Handle) -> Vec<ArrayGrip> {
 /// items) of polar array `k`, as the Autodesk help places them ("To Work With Polar Arrays": the
 /// Angle Between grip is on the second item, shown only for 3 or more items).
 fn polar_grips(p: &super::ArrayParams, k: &PolarArray, world: &impl Fn(Vec2) -> Vec2, toward: &impl Fn(Vec2) -> Vec2) -> Vec<ArrayGrip> {
-    let items = p.items().unwrap_or_default();
+    let items = p.all_items().unwrap_or_default();
     let at_i = |i: u32| items.iter().find(|it| it.i == i && it.j == 0 && it.level == 0).map(|it| it.insert.xy());
     // The tangent at a point around the circle, in the direction of travel (the fill's sign).
     let tangent = |pt: Vec2| -> Vec2 {
@@ -188,6 +188,7 @@ mod tests {
             levels: 1,
             level_spacing: 0.0,
             replaced: Vec::new(),
+            excluded: Vec::new(),
             editing: None,
         };
         let mut blk = Block::new("*U1");
@@ -235,6 +236,7 @@ mod tests {
             levels: 1,
             level_spacing: 0.0,
             replaced: Vec::new(),
+            excluded: Vec::new(),
             editing: None,
         };
         let mut blk = Block::new("*U1");
@@ -317,6 +319,22 @@ mod tests {
         assert!(items_grip.at.near(Vec2::new(9.0, -1.0), 1e-6), "{:?}", items_grip.at);
         let angle_grip = gs.iter().find(|g| g.which == ArrayGripWhich::Angle).unwrap();
         assert!((angle_grip.spacing - 90.0).abs() < 1e-6, "{:?}", angle_grip.spacing);
+    }
+
+    #[test]
+    fn polar_count_grips_stay_at_deleted_grid_positions() {
+        let (mut d, h) = drawing_with_polar_array(Vec2::ZERO, Vec2::new(-10.0, 0.0), 4, 360.0);
+        let before = array_grips(&d, h);
+        let mut p = d.array_params(d.entity(h).unwrap()).unwrap();
+        p.exclude((1, 0, 0));
+        p.exclude((3, 0, 0));
+        let mut block = Block::new("*U1");
+        for entity in p.item_entities(&mut d).unwrap() {
+            block.entities.push(entity);
+        }
+        block.array = Some(p);
+        d.blocks.insert("*U1".into(), Arc::new(block));
+        assert_eq!(array_grips(&d, h), before);
     }
 
     #[test]

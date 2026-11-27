@@ -26,7 +26,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("arrayedit", "Edit Array", run_arrayedit)
             .menu(&["Modify", "Object", "Array"])
             .params(
-                "{handle, cols?, rows?, colSpacing?, rowSpacing?, axisAngle? (degrees), rowElevation?, levels?, levelSpacing?, items?, angle? (fill, degrees), angleBetween?, rotate?: bool, center? ([x, y]), base? ([x, y], the new base point), reset?: bool, replace?: {handles, base? ([x, y], default the objects' centre), items: [[i, j, level]…] | \"source\"}, source?: {item? ([i, j, level], default [0, 0, 0])} (places the source objects for editing; ARRAYCLOSE ends)}",
+                "{handle, cols?, rows?, colSpacing?, rowSpacing?, axisAngle? (degrees), rowElevation?, levels?, levelSpacing?, items?, angle? (fill, degrees), angleBetween?, rotate?: bool, center? ([x, y]), base? ([x, y], the new base point), reset?: bool (also restores deleted items), replace?: {handles, base? ([x, y], default the objects' centre), items: [[i, j, level]…] | \"source\"}, delete?: [[i, j, level]…] (zero-based; removes those items' instances; the array stays associative — at least one item must remain), restore?: [[i, j, level]…] (undoes `delete` for those items), source?: {item? ([i, j, level], default [0, 0, 0])} (places the source objects for editing; ARRAYCLOSE ends)}",
             )
             .interactive(|_| Ok(Box::new(EditM::default()))),
         CommandSpec::new("arrayclose", "Close Array Editing", run_arrayclose)
@@ -62,8 +62,12 @@ fn refuse_while_editing(s: &Session) -> Result<()> {
 /// Where item (i, j, level) goes in array block coordinates: the image of the block's origin
 /// and the item's rotation (a block's own base point is applied on top).
 fn item_place(p: &ArrayParams, item: (u32, u32, u32)) -> Result<Mat3> {
-    let it =
-        p.items().unwrap_or_default().into_iter().find(|it| (it.i, it.j, it.level) == item).ok_or_else(|| other("The array has no such item."))?;
+    let it = p
+        .all_items()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|it| (it.i, it.j, it.level) == item)
+        .ok_or_else(|| other("The array has no such item."))?;
     Ok(Mat3::translate(it.insert.xy()).then_before(Mat3::rotate(it.rotation)))
 }
 
@@ -104,7 +108,10 @@ fn drop_unused(d: &mut Drawing, names: &[String]) {
             _ => false,
         };
         let in_spaces = d.model.iter().any(used) || d.layouts.iter().any(|l| l.entities.iter().any(used));
-        let in_blocks = d.blocks.values().any(|b| b.entities.iter().any(used) || b.array.as_ref().is_some_and(|a| a.source.eq_ignore_ascii_case(n)));
+        let in_blocks = d.blocks.values().any(|b| {
+            b.entities.iter().any(used)
+                || b.array.as_ref().is_some_and(|a| a.source.eq_ignore_ascii_case(n) || a.replaced.iter().any(|r| r.block.eq_ignore_ascii_case(n)))
+        });
         if !in_spaces && !in_blocks {
             d.blocks.remove(n);
         }
@@ -123,6 +130,9 @@ pub(super) fn rebuild(s: &mut Session, h: Handle, p: ArrayParams, insert: Option
     check_size(s, p.item_count(), objs)?;
     let d = s.doc_mut()?;
     let items = p.item_entities(d).ok_or_else(|| other("The array parameters are not valid."))?;
+    if items.is_empty() {
+        return Err(other("The array must keep at least one item; restore an item, or erase the array instead."));
+    }
     let name = d.anonymous_block_name("*U");
     let mut blk = Block::new(&name);
     for e in items {
@@ -183,7 +193,21 @@ fn centroid(d: &Drawing, hs: &[Handle]) -> Vec2 {
 
 /// The item of array `h` under world point `at` (the lowest level when levels overlap).
 fn item_at(d: &Drawing, h: Handle, at: Vec2, tol: f64) -> Option<(u32, u32, u32)> {
-    let (ins, blk, p) = array_of(d, h).ok()?;
+    item_at_impl(d, h, at, tol, false)
+}
+
+/// Like [`item_at`], but also finds the positions of items deleted with ARRAYEDIT item
+/// deletion (their would-be position, computed as if nothing had been deleted) — used by the
+/// Item option so a deleted item can be picked at its old position to restore it.
+fn item_at_including_deleted(d: &Drawing, h: Handle, at: Vec2, tol: f64) -> Option<(u32, u32, u32)> {
+    item_at_impl(d, h, at, tol, true)
+}
+
+fn item_at_impl(d: &Drawing, h: Handle, at: Vec2, tol: f64, include_deleted: bool) -> Option<(u32, u32, u32)> {
+    let (ins, blk, mut p) = array_of(d, h).ok()?;
+    if include_deleted {
+        p.excluded.clear();
+    }
     let w = ins.transform(blk.base.xy());
     let mut best: Option<((u32, u32, u32), f64)> = None;
     // Each block's own extents, measured once.
@@ -448,6 +472,36 @@ pub(super) fn fill_from_between(b: f64, items: u32) -> Result<f64> {
     Ok(fill)
 }
 
+/// Validate item coordinates before changing exclusions; index the batch once rather than
+/// repeatedly scanning a potentially file-sized exclusion list.
+fn change_items(a: &mut ArrayParams, list: &[Value], delete: bool) -> Result<()> {
+    let key = if delete { "delete" } else { "restore" };
+    if list.len() as u64 > cadcraft_doc::MAX_ARRAY_ITEMS {
+        return Err(bad("arrayedit", format!("`{key}` has too many items")));
+    }
+    let (cols, rows) = a.grid();
+    let mut edits = HashSet::new();
+    for value in list {
+        let coords =
+            value.as_array().filter(|c| c.len() == 3).ok_or_else(|| bad("arrayedit", format!("`{key}` holds [i, j, level] item numbers")))?;
+        let coord = |index: usize| coords.get(index).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+        let item = match (coord(0), coord(1), coord(2)) {
+            (Some(i), Some(j), Some(level)) if i < cols && j < rows && level < a.levels => (i, j, level),
+            _ => return Err(bad("arrayedit", "The array has no such item.")),
+        };
+        edits.insert(item);
+    }
+    if delete {
+        let mut excluded: HashSet<_> = a.excluded.iter().copied().collect();
+        excluded.extend(edits);
+        a.excluded = excluded.into_iter().collect();
+        a.excluded.sort_unstable();
+    } else {
+        a.excluded.retain(|item| !edits.contains(item));
+    }
+    Ok(())
+}
+
 fn run_arrayedit(s: &mut Session, p: &Value) -> Result<Value> {
     let h = super::super::curves::handle_param(p, "handle").ok_or_else(|| bad("arrayedit", "`handle` (the array) is required"))?;
     refuse_while_editing(s)?;
@@ -457,6 +511,7 @@ fn run_arrayedit(s: &mut Session, p: &Value) -> Result<Value> {
     if bool_or(p, "reset", false) {
         let (_, _, mut a) = array_of(s.doc()?, h)?;
         a.replaced.clear();
+        a.excluded.clear();
         rebuild(s, h, a, None)?;
     }
     if let Some(r) = p.get("replace").filter(|v| !v.is_null()) {
@@ -474,6 +529,21 @@ fn run_arrayedit(s: &mut Session, p: &Value) -> Result<Value> {
             }
             _ => return Err(bad("arrayedit", "`replace.items` must be a list of [i, j, level] or \"source\"")),
         }
+        rebuild(s, h, a, None)?;
+    }
+    if let Some(v) = p.get("delete").filter(|v| !v.is_null()) {
+        let list = v.as_array().ok_or_else(|| bad("arrayedit", "`delete` must be a list of [i, j, level]"))?;
+        let (_, _, mut a) = array_of(s.doc()?, h)?;
+        change_items(&mut a, list, true)?;
+        if a.items().is_none_or(|v| v.is_empty()) {
+            return Err(other("The array must keep at least one item; restore an item, or erase the array instead."));
+        }
+        rebuild(s, h, a, None)?;
+    }
+    if let Some(v) = p.get("restore").filter(|v| !v.is_null()) {
+        let list = v.as_array().ok_or_else(|| bad("arrayedit", "`restore` must be a list of [i, j, level]"))?;
+        let (_, _, mut a) = array_of(s.doc()?, h)?;
+        change_items(&mut a, list, false)?;
         rebuild(s, h, a, None)?;
     }
     if let Some(b) = point_param(p, "base") {
@@ -523,6 +593,9 @@ enum Stage {
     Between,
     Fill,
     Rotate,
+    /// Item: pick an item to delete (Ctrl+click-equivalent); picking an already-deleted item
+    /// restores it. Enter returns to the main menu.
+    Item,
     /// REPlace: objects, their base point, then the items to replace.
     RepSelect,
     RepBase,
@@ -596,6 +669,7 @@ impl EditM {
                 self.sel = SelectPhase::default();
                 Stage::RepSelect
             }
+            "Item" => Stage::Item,
             "Base point" => Stage::Base,
             "Rows" => Stage::RowsCount,
             "Columns" => Stage::ColsCount,
@@ -607,9 +681,10 @@ impl EditM {
             "RESet" => {
                 self.change(s, |p| {
                     p.replaced.clear();
+                    p.excluded.clear();
                     Ok(())
                 })?;
-                s.echo("Replaced items were restored.");
+                s.echo("Replaced and deleted items were restored.");
                 Stage::Main
             }
             _ => return Err(other("Invalid option keyword.")),
@@ -655,10 +730,23 @@ impl Interactive for EditM {
         match self.stage {
             Select => Prompt::new("Select array", Accept::SELECT),
             Main if polar.is_some() => Prompt::new("Enter an option", KEYWORDS)
-                .kw(&["Source", "REPlace", "Base point", "Items", "Angle between", "Fill angle", "Rows", "Levels", "ROTate items", "RESet", "eXit"])
+                .kw(&[
+                    "Source",
+                    "REPlace",
+                    "Item",
+                    "Base point",
+                    "Items",
+                    "Angle between",
+                    "Fill angle",
+                    "Rows",
+                    "Levels",
+                    "ROTate items",
+                    "RESet",
+                    "eXit",
+                ])
                 .default("eXit"),
             Main => Prompt::new("Enter an option", KEYWORDS)
-                .kw(&["Source", "REPlace", "Base point", "Rows", "Columns", "Levels", "RESet", "eXit"])
+                .kw(&["Source", "REPlace", "Item", "Base point", "Rows", "Columns", "Levels", "RESet", "eXit"])
                 .default("eXit"),
             Base => Prompt::new("Specify base point", Accept::POINT).kw(&["Key point"]).default("centroid"),
             ColsCount => Prompt::new("Enter the number of columns", Accept::NUMBER).default(cols.to_string()),
@@ -682,6 +770,7 @@ impl Interactive for EditM {
             RepBase => Prompt::new("Select base point of replacement objects", Accept::POINT).kw(&["Key point"]).default("centroid"),
             RepItems => Prompt::new("Select an item in array to replace", Accept::POINT).kw(&["Source objects"]),
             SourceItem => Prompt::new("Select item in array", Accept::POINT),
+            Item => Prompt::new("Select item to delete (pick again to restore it)", Accept::POINT),
         }
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
@@ -890,6 +979,31 @@ impl Interactive for EditM {
                 return Ok(Step::Done);
             }
             (SourceItem, Input::Enter) => Main,
+            (Item, Input::Point(at)) => {
+                let tol = s.pixel_size() * s.settings.pickbox;
+                let item =
+                    item_at_including_deleted(s.doc()?, h, *at, tol).ok_or_else(|| other("No array item there; select an item of the array."))?;
+                let excluded = self.params(s).is_some_and(|p| p.is_excluded(item.0, item.1, item.2));
+                if excluded {
+                    self.change(s, |p| {
+                        p.include(item);
+                        Ok(())
+                    })?;
+                    s.echo("The item was restored.");
+                } else {
+                    let left = self.params(s).and_then(|p| p.items()).map(|v| v.len()).unwrap_or(0);
+                    if left <= 1 {
+                        return Err(other("The array must keep at least one item."));
+                    }
+                    self.change(s, |p| {
+                        p.exclude(item);
+                        Ok(())
+                    })?;
+                    s.echo("The item was deleted.");
+                }
+                Item
+            }
+            (Item, Input::Enter) => Main,
             _ => stage,
         };
         self.stage = next;

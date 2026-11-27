@@ -105,7 +105,7 @@ fn angle_between_points(from: Vec2, to: Vec2, center: Vec2) -> f64 {
 /// Local point of polar array item `i` (row 0, level 0); the array's base point (local (0, 0))
 /// when there is no such item (never panics on a hostile/empty item list).
 fn polar_item_local(p: &cadcraft_doc::ArrayParams, i: u32) -> Vec2 {
-    p.items().unwrap_or_default().into_iter().find(|it| it.i == i && it.j == 0 && it.level == 0).map(|it| it.insert.xy()).unwrap_or(Vec2::ZERO)
+    p.all_items().unwrap_or_default().into_iter().find(|it| it.i == i && it.j == 0 && it.level == 0).map(|it| it.insert.xy()).unwrap_or(Vec2::ZERO)
 }
 
 /// Drag grip `which` of array `h` to `to` in the session's drawing.

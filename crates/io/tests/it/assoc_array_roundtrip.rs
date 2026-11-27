@@ -23,6 +23,7 @@ fn params(source: &str) -> ArrayParams {
         levels: 2,
         level_spacing: 4.0,
         replaced: vec![ReplacedItem { i: 1, j: 0, level: 0, block: "Größe".into() }],
+        excluded: vec![(3, 1, 0)],
         editing: None,
     }
 }
@@ -71,7 +72,7 @@ fn array_parameters_survive_a_dxf_round_trip() {
     let back = read_dxf(text.as_bytes()).unwrap();
     let arr = back.block("*U2").unwrap();
     assert_eq!(arr.array.as_ref(), Some(&params("*U1")));
-    assert_eq!(arr.entities.len(), 20);
+    assert_eq!(arr.entities.len(), 19);
     assert!(back.block("*U1").unwrap().array.is_none());
     let ins = back.model.iter().next().unwrap();
     assert_eq!(back.array_params(ins), Some(params("*U1")));
@@ -97,7 +98,7 @@ fn damaged_array_xdata_is_ignored() {
         let arr = back.block("*U2").unwrap();
         assert!(arr.array.is_none(), "{bad}");
         // The items are still there: the array reads as a plain block reference.
-        assert_eq!(arr.entities.len(), 20);
+        assert_eq!(arr.entities.len(), 19);
     }
 }
 
@@ -128,5 +129,5 @@ fn renamed_blocks_are_followed() {
     d.blocks.insert("*U2".into(), Arc::new(arr));
     let back = read_dxf(write_dxf(&d).as_bytes()).unwrap();
     assert!(back.block("*U2").unwrap().array.is_none());
-    assert_eq!(back.block("*U2").unwrap().entities.len(), 19);
+    assert_eq!(back.block("*U2").unwrap().entities.len(), 18);
 }

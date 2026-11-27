@@ -40,6 +40,12 @@ pub struct ArrayParams {
     /// Items that refer to another block than the source (ARRAYEDIT REPlace).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replaced: Vec<ReplacedItem>,
+    /// Items deleted from the array (ARRAYEDIT item deletion / AutoCAD's Ctrl+click): no
+    /// instance is generated for these (i, j, level) placements, but the array stays
+    /// associative — editing the source or the other parameters still regenerates every other
+    /// item. ARRAYEDIT RESet restores them along with replaced items.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded: Vec<(u32, u32, u32)>,
     /// The source objects are out for editing (ARRAYEDIT Source, until ARRAYCLOSE). Not saved:
     /// a drawing saved meanwhile keeps the objects as separate objects.
     #[serde(skip)]
@@ -170,15 +176,48 @@ impl ArrayParams {
             && !self.source.trim().is_empty()
             && nums.iter().chain(std::iter::once(&self.level_spacing)).all(|v| v.is_finite())
             && self.replaced.len() as u64 <= MAX_ARRAY_ITEMS
+            && self.excluded.len() as u64 <= MAX_ARRAY_ITEMS
     }
 
-    /// Where every item goes, row by row and level by level; `None` when the parameters are not
-    /// [valid](Self::is_valid).
+    /// Whether item (i, j, level) was deleted with ARRAYEDIT item deletion (AutoCAD's
+    /// Ctrl+click): no instance is generated for it.
+    pub fn is_excluded(&self, i: u32, j: u32, level: u32) -> bool {
+        self.excluded.contains(&(i, j, level))
+    }
+
+    /// Delete item (i, j, level) from the array (ARRAYEDIT item deletion / Ctrl+click):
+    /// idempotent, and does not itself check that at least one item would remain (callers that
+    /// must keep the array non-empty check [`items`](Self::items) after calling this).
+    pub fn exclude(&mut self, item: (u32, u32, u32)) {
+        if !self.excluded.contains(&item) {
+            self.excluded.push(item);
+        }
+    }
+
+    /// Restore a previously deleted item (i, j, level); idempotent.
+    pub fn include(&mut self, item: (u32, u32, u32)) {
+        self.excluded.retain(|&e| e != item);
+    }
+
+    /// Where the remaining items go, row by row and level by level; `None` when the
+    /// parameters are not [valid](Self::is_valid).
     pub fn items(&self) -> Option<Vec<ArrayItem>> {
+        self.placements(true)
+    }
+
+    /// All grid positions, including deleted items, for count grips and source anchoring.
+    pub fn all_items(&self) -> Option<Vec<ArrayItem>> {
+        self.placements(false)
+    }
+
+    fn placements(&self, exclude: bool) -> Option<Vec<ArrayItem>> {
         if !self.is_valid() {
             return None;
         }
         let n = usize::try_from(self.item_count()).ok()?;
+        // Index once: a file may carry millions of exclusions, so scanning the list for
+        // every grid position would turn regeneration into quadratic work.
+        let excluded: std::collections::HashSet<_> = if exclude { self.excluded.iter().copied().collect() } else { Default::default() };
         let mut out = Vec::with_capacity(n);
         for level in 0..self.levels {
             let lz = self.level_spacing * f64::from(level);
@@ -187,6 +226,9 @@ impl ArrayParams {
                     let (ux, uy) = (Vec2::from_angle(r.axis_angle), Vec2::from_angle(r.axis_angle).perp());
                     for j in 0..r.rows {
                         for i in 0..r.cols {
+                            if excluded.contains(&(i, j, level)) {
+                                continue;
+                            }
                             let p = ux * (r.col_spacing * f64::from(i)) + uy * (r.row_spacing * f64::from(j));
                             out.push(ArrayItem { i, j, level, insert: p.to3(lz + r.row_elevation * f64::from(j)), rotation: 0.0 });
                         }
@@ -204,6 +246,9 @@ impl ArrayParams {
                     for j in 0..p.rows {
                         let o = out_dir * (p.row_spacing * f64::from(j));
                         for i in 0..p.items {
+                            if excluded.contains(&(i, j, level)) {
+                                continue;
+                            }
                             let a = step * f64::from(i);
                             let at = o.rotate_about(p.center, a);
                             let rotation = if p.rotate { a } else { 0.0 };
@@ -260,12 +305,12 @@ impl ArrayParams {
     ///
     /// [`items`]: Self::items
     pub fn sync_names<'a>(&mut self, ents: impl Iterator<Item = &'a Entity>) -> bool {
-        let n = self.item_count();
+        let Some(items) = self.items() else { return false };
+        let n = items.len() as u64;
         let ents: Vec<&Entity> = ents.take(usize::try_from(n).unwrap_or(usize::MAX).saturating_add(1)).collect();
         if ents.len() as u64 != n {
             return false;
         }
-        let Some(items) = self.items() else { return false };
         // Index the replacement entries by placement so each item is matched in O(1) instead of
         // scanning the whole `replaced` vector per item, which is quadratic when both the items
         // and the replacements are large (CWE-407). Last entry wins, as `.rev().find` did.
@@ -314,6 +359,7 @@ mod tests {
             levels: 2,
             level_spacing: 5.0,
             replaced: Vec::new(),
+            excluded: Vec::new(),
             editing: None,
         }
     }
@@ -342,6 +388,7 @@ mod tests {
             levels: 1,
             level_spacing: 0.0,
             replaced: Vec::new(),
+            excluded: Vec::new(),
             editing: None,
         };
         let items = p.items().unwrap_or_default();
@@ -350,6 +397,31 @@ mod tests {
         assert!(items[1].insert.xy().near(Vec2::new(-10.0, 10.0), 1e-9));
         // Row 1 starts one unit further out.
         assert!(items[4].insert.xy().near(Vec2::new(1.0, 0.0), 1e-9));
+    }
+
+    #[test]
+    fn exclusions_remove_only_the_indexed_row_and_level_and_sync_visible_items() {
+        let mut p = rect(3, 2);
+        p.exclude((1, 1, 1));
+        p.exclude((1, 1, 1));
+        assert_eq!(p.excluded.len(), 1);
+        assert_eq!(p.item_count(), 12);
+        assert_eq!(p.all_items().unwrap().len(), 12);
+        let items = p.items().unwrap();
+        assert_eq!(items.len(), 11);
+        assert!(!items.iter().any(|it| (it.i, it.j, it.level) == (1, 1, 1)));
+        assert!(items.iter().any(|it| (it.i, it.j, it.level) == (1, 1, 0)));
+        let mut d = Drawing::default();
+        let entities = p.item_entities(&mut d).unwrap();
+        assert_eq!(entities.len(), 11);
+        assert!(p.sync_names(entities.iter()));
+        p.include((1, 1, 1));
+        assert_eq!(p.items().unwrap().len(), 12);
+        // Older files have no exclusions member, so they still deserialize normally.
+        let mut json = serde_json::to_value(&p).unwrap();
+        json.as_object_mut().unwrap().remove("excluded");
+        let restored: ArrayParams = serde_json::from_value(json).unwrap();
+        assert!(restored.excluded.is_empty());
     }
 
     #[test]

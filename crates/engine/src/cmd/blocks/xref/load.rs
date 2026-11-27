@@ -554,6 +554,7 @@ mod tests {
             levels: 1,
             level_spacing: 0.0,
             replaced: vec![ReplacedItem { i: 1, j: 0, level: 0, block: "ALT".into() }],
+            excluded: Vec::new(),
             editing: Some(Default::default()),
         };
         let mut arr = Block::new("*U2");

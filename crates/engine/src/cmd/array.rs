@@ -60,7 +60,15 @@ pub fn specs() -> Vec<CommandSpec> {
 
 /// Array parameters around `kind` (the source block is named when the array is made).
 fn params(kind: ArrayKind, levels: u64, level_spacing: f64) -> ArrayParams {
-    ArrayParams { source: "*".into(), kind, levels: u32::try_from(levels).unwrap_or(u32::MAX), level_spacing, replaced: Vec::new(), editing: None }
+    ArrayParams {
+        source: "*".into(),
+        kind,
+        levels: u32::try_from(levels).unwrap_or(u32::MAX),
+        level_spacing,
+        replaced: Vec::new(),
+        excluded: Vec::new(),
+        editing: None,
+    }
 }
 
 fn count32(n: u64) -> u32 {
