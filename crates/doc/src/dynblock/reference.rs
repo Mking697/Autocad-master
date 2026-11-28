@@ -265,6 +265,24 @@ pub fn custom_properties(d: &Drawing, insert: Handle) -> Option<(String, Vec<Cus
                 let angle = dir.y.atan2(dir.x).to_degrees();
                 out.push(CustomProperty { name: label.clone(), value: number(d, angle), choices: Vec::new(), editable: true });
             }
+            ParameterKind::Polar { base: b, end: e, label, .. } => {
+                let (b, e) = match v {
+                    Some(Value::Points { base, end }) => (*base, *end),
+                    _ => (*b, *e),
+                };
+                let dir = e - b;
+                out.push(CustomProperty { name: label.clone(), value: number(d, dir.len() * sx), choices: Vec::new(), editable: true });
+                let angle = dir.y.atan2(dir.x).to_degrees();
+                out.push(CustomProperty { name: format!("{label} Angle"), value: number(d, angle), choices: Vec::new(), editable: true });
+            }
+            ParameterKind::Xy { base: b, end: e, label, .. } => {
+                let (b, e) = match v {
+                    Some(Value::Points { base, end }) => (*base, *end),
+                    _ => (*b, *e),
+                };
+                out.push(CustomProperty { name: format!("{label} X"), value: number(d, (e.x - b.x) * sx), choices: Vec::new(), editable: true });
+                out.push(CustomProperty { name: format!("{label} Y"), value: number(d, (e.y - b.y) * sy), choices: Vec::new(), editable: true });
+            }
             ParameterKind::Flip { label, base_state_label, flipped_state_label, .. } => {
                 let value = match v {
                     Some(Value::Text { value }) => value.clone(),

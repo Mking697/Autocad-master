@@ -247,6 +247,16 @@ fn number(value: &str) -> Result<f64, String> {
     value.trim().parse::<f64>().ok().filter(|v| v.is_finite()).ok_or_else(|| format!("\"{value}\" is not a number."))
 }
 
+/// Which suffix a two-part property name was split on: "Position1 X"/"Position1 Y" (a point or
+/// an Xy parameter's position) or "Distance1 Angle" (a Polar parameter's angle, alongside its
+/// own bare "Distance1" for the distance).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Suffix {
+    X,
+    Y,
+    Angle,
+}
+
 /// Set custom property `name` (as the Properties palette names it, any case) of dynamic block
 /// reference `insert` to `value` (lengths and positions in drawing units, as Properties shows them).
 pub fn set_property(d: &mut Drawing, insert: Handle, name: &str, value: &str) -> Result<(), String> {
@@ -256,20 +266,23 @@ pub fn set_property(d: &mut Drawing, insert: Handle, name: &str, value: &str) ->
     let (sx, sy) = (ins.scale.x.abs().max(1e-12), ins.scale.y.abs().max(1e-12));
     let block_base = d.block(&r.definition).map(|b| b.base).unwrap_or_default();
     let want = name.trim();
-    // A point parameter's position is two properties, "Position1 X" and "Position1 Y".
-    let (label, axis) = match want.rsplit_once(' ') {
-        Some((l, a)) if a.eq_ignore_ascii_case("X") || a.eq_ignore_ascii_case("Y") => (l, Some(a.eq_ignore_ascii_case("X"))),
+    // A point or Xy parameter's position is two properties, "Position1 X"/"Position1 Y"; a
+    // Polar parameter's angle is "Distance1 Angle" alongside its own bare "Distance1".
+    let (label, suffix) = match want.rsplit_once(' ') {
+        Some((l, a)) if a.eq_ignore_ascii_case("X") => (l, Some(Suffix::X)),
+        Some((l, a)) if a.eq_ignore_ascii_case("Y") => (l, Some(Suffix::Y)),
+        Some((l, a)) if a.eq_ignore_ascii_case("Angle") => (l, Some(Suffix::Angle)),
         _ => (want, None),
     };
     let p = m
         .parameters
         .iter()
         .find(|p| {
-            p.show_properties && p.kind.label().is_some_and(|l| l.eq_ignore_ascii_case(want) || (axis.is_some() && l.eq_ignore_ascii_case(label)))
+            p.show_properties && p.kind.label().is_some_and(|l| l.eq_ignore_ascii_case(want) || (suffix.is_some() && l.eq_ignore_ascii_case(label)))
         })
         .ok_or_else(|| format!("The reference has no property \"{name}\"."))?;
     let mut plan = Plan::default();
-    match (&p.kind, axis) {
+    match (&p.kind, suffix) {
         (ParameterKind::Visibility { states, label, .. }, _) => {
             let s = states.iter().find(|s| s.name.eq_ignore_ascii_case(value.trim())).ok_or_else(|| {
                 format!("\"{value}\" is not a state of {label}: {}.", states.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "))
@@ -297,11 +310,43 @@ pub fn set_property(d: &mut Drawing, insert: Handle, name: &str, value: &str) ->
             plan.set.insert(p.node, Val::Points(b2, e2));
             plan.chain(&m, &r.values, p.node, "UpdatedDistance")?;
         }
-        (ParameterKind::Point { .. }, Some(is_x)) => {
+        (ParameterKind::Point { .. }, Some(Suffix::X | Suffix::Y)) => {
+            let is_x = suffix == Some(Suffix::X);
             let Some(Val::Point(at)) = current(&m, &r.values, p.node) else { return Err(format!("{name} has no position.")) };
             let v = number(value)?;
             let at = if is_x { Vec3::new(block_base.x + v / sx, at.y, at.z) } else { Vec3::new(at.x, block_base.y + v / sy, at.z) };
             plan.set.insert(p.node, Val::Point(at));
+        }
+        (ParameterKind::Xy { .. }, Some(Suffix::X | Suffix::Y)) => {
+            let is_x = suffix == Some(Suffix::X);
+            let Some(Val::Points(b, e)) = current(&m, &r.values, p.node) else { return Err(format!("{name} has no points.")) };
+            let v = number(value)?;
+            let e2 = if is_x { Vec3::new(b.x + v / sx, e.y, e.z) } else { Vec3::new(e.x, b.y + v / sy, e.z) };
+            plan.set.insert(p.node, Val::Points(b, e2));
+        }
+        (ParameterKind::Polar { .. }, None) => {
+            let typed = number(value)? / sx;
+            if typed <= 0.0 {
+                return Err(format!("{name} must be more than 0."));
+            }
+            let Some(Val::Points(b, e)) = current(&m, &r.values, p.node) else { return Err(format!("{name} has no points.")) };
+            let dir = (e - b).xy();
+            if dir.len() < 1e-9 {
+                return Err(format!("{name} has no direction."));
+            }
+            let u = dir * (1.0 / dir.len());
+            let e2 = Vec3::new(b.x + u.x * typed, b.y + u.y * typed, e.z);
+            plan.set.insert(p.node, Val::Points(b, e2));
+        }
+        (ParameterKind::Polar { .. }, Some(Suffix::Angle)) => {
+            let Some(Val::Points(b, e)) = current(&m, &r.values, p.node) else { return Err(format!("{name} has no points.")) };
+            let radius = (e - b).len();
+            if radius < 1e-9 {
+                return Err(format!("{name} has no direction."));
+            }
+            let angle = number(value)?.to_radians();
+            let e2 = Vec3::new(b.x + radius * angle.cos(), b.y + radius * angle.sin(), e.z);
+            plan.set.insert(p.node, Val::Points(b, e2));
         }
         (ParameterKind::Rotation { values, .. }, None) => {
             let Some(Val::Points(b, e)) = current(&m, &r.values, p.node) else { return Err(format!("{name} has no points.")) };
@@ -378,6 +423,20 @@ pub fn drag_grip(d: &mut Drawing, insert: Handle, node: i32, part: super::GripPa
         (ParameterKind::Point { label, .. }, GripPart::At) => {
             let Some(Val::Point(at)) = current(&m, &r.values, node) else { return Err(format!("{label} has no position.")) };
             plan.set.insert(node, Val::Point(Vec3::new(q.x, q.y, at.z)));
+        }
+        (ParameterKind::Polar { label, .. }, GripPart::End) => {
+            let Some(Val::Points(b, e)) = current(&m, &r.values, node) else { return Err(format!("{label} has no points.")) };
+            let dir = Vec2::new(q.x - b.x, q.y - b.y);
+            if dir.len() < 1e-9 {
+                return Err(format!("{label} must be dragged away from its base point."));
+            }
+            // The single stretch arrow drags both the distance and the angle together.
+            plan.set.insert(node, Val::Points(b, Vec3::new(q.x, q.y, e.z)));
+        }
+        (ParameterKind::Xy { label, .. }, GripPart::End) => {
+            let Some(Val::Points(b, e)) = current(&m, &r.values, node) else { return Err(format!("{label} has no points.")) };
+            // One combined position grip, like Point's own (see `grips::grips`'s own comment).
+            plan.set.insert(node, Val::Points(b, Vec3::new(q.x, q.y, e.z)));
         }
         (ParameterKind::Rotation { values, label, .. }, GripPart::End) => {
             let Some(Val::Points(b, e)) = current(&m, &r.values, node) else { return Err(format!("{label} has no points.")) };
@@ -1103,6 +1162,7 @@ fn drop_if_unused(d: &mut Drawing, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Insert;
 
     fn tagged(h: u64, tag_value: Option<&str>) -> Entity {
         let mut e = Entity::new(Handle(h), EntityKind::Line(crate::Line { a: Vec3::ZERO, b: Vec3::ZERO }));
@@ -1124,5 +1184,174 @@ mod tests {
         anon.entities.push(tagged(6, None));
         assert_eq!(by_tag(&d, &def), vec![(10, Handle(1)), (20, Handle(2))]);
         assert_eq!(by_tag(&d, &anon), vec![(20, Handle(5)), (1_000_001, Handle(6))]);
+    }
+
+    // Polar and Xy fixtures: author.rs doesn't write these kinds yet (only the reader does, F3),
+    // so the graph is built by hand here exactly as `dynblock.rs`'s own `grip_ids`/`parameter`
+    // readers expect it (the same shape `author.rs`'s private `parameter_object` writes for
+    // Linear, just with the Polar/Xy section and group codes `dynblock.rs`'s `parameter()` reads).
+
+    fn pt(code: i32, p: Vec3) -> Vec<RawTag> {
+        vec![tag(code, p.x.to_string()), tag(code + 10, p.y.to_string()), tag(code + 20, p.z.to_string())]
+    }
+
+    /// A Polar or Xy parameter member (graph id 1), base/end grip ids 0 then 11 (mirroring
+    /// Rotation's own "no base grip, only the one draggable point" layout).
+    fn two_point_param(handle: Handle, owner: Handle, element: &str, kind: &str, section: &str, base: Vec3, end: Vec3, label: &str) -> ForeignObject {
+        let mut tags = vec![tag(5, handle.hex()), tag(330, owner.hex())];
+        tags.push(tag(100, "AcDbEvalExpr"));
+        tags.push(tag(90, "1"));
+        tags.push(tag(100, "AcDbBlockElement"));
+        tags.push(tag(300, element));
+        tags.push(tag(100, "AcDbBlockParameter"));
+        tags.push(tag(280, "1")); // shown in the Properties palette
+        tags.push(tag(100, "AcDbBlock2PtParameter"));
+        tags.extend(pt(1010, base));
+        tags.extend(pt(1011, end));
+        tags.push(tag(170, "2"));
+        tags.push(tag(91, "0")); // no base grip
+        tags.push(tag(91, "11")); // the one draggable point's grip id
+        tags.push(tag(100, section));
+        tags.push(tag(305, label));
+        tags.push(tag(306, ""));
+        ForeignObject { handle, kind: kind.into(), tags }
+    }
+
+    /// A drawing with block "B" (no entities of its own) carrying one hand-authored Polar or Xy
+    /// parameter, and a reference to it.
+    fn fixture_with_param(element: &str, kind: &str, section: &str, base: Vec3, end: Vec3, label: &str) -> (Drawing, Handle) {
+        let mut d = Drawing::new_imperial();
+        d.blocks.insert("B".into(), std::sync::Arc::new(Block::new("B")));
+        let ins = Insert {
+            block: "B".into(),
+            insert: Vec3::ZERO,
+            scale: Vec3::new(1.0, 1.0, 1.0),
+            rotation: 0.0,
+            attribs: Vec::new(),
+            cols: 1,
+            rows: 1,
+            col_spacing: 0.0,
+            row_spacing: 0.0,
+            clip: None,
+        };
+        let r = d.add(&crate::Space::Model, crate::Common::default(), EntityKind::Insert(ins)).expect("insert added");
+        let key: crate::foreign::ForeignKey = ("BLOCK_RECORD".to_string(), "B".to_string());
+        let record_handle = d.new_handle();
+        let graph = d.new_handle();
+        let xdict = d.new_handle();
+        let param_h = d.new_handle();
+        let param_obj = two_point_param(param_h, graph, element, kind, section, base, end, label);
+        let graph_obj = ForeignObject {
+            handle: graph,
+            kind: "ACAD_EVALUATION_GRAPH".into(),
+            tags: vec![tag(5, graph.hex()), tag(330, xdict.hex()), tag(100, "AcDbEvalGraph"), tag(360, param_h.hex())],
+        };
+        let dict_obj = ForeignObject {
+            handle: xdict,
+            kind: "DICTIONARY".into(),
+            tags: vec![
+                tag(5, xdict.hex()),
+                tag(330, record_handle.hex()),
+                tag(100, "AcDbDictionary"),
+                tag(280, "1"),
+                tag(281, "1"),
+                tag(3, "ACAD_ENHANCEDBLOCK"),
+                tag(360, graph.hex()),
+            ],
+        };
+        let f = std::sync::Arc::make_mut(&mut d.foreign);
+        f.targets.insert(record_handle, key.clone());
+        f.objects.extend([param_obj, graph_obj, dict_obj]);
+        f.records.entry(key).or_default().xdict = Some(xdict);
+        (d, r)
+    }
+
+    fn polar_fixture() -> (Drawing, Handle) {
+        fixture_with_param(
+            "Polar1",
+            "BLOCKPOLARPARAMETER",
+            "AcDbBlockPolarParameter",
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(4.0, 1.0, 0.0),
+            "Distance1",
+        )
+    }
+
+    fn xy_fixture() -> (Drawing, Handle) {
+        fixture_with_param("XY1", "BLOCKXYPARAMETER", "AcDbBlockXYParameter", Vec3::new(1.0, 1.0, 0.0), Vec3::new(4.0, 5.0, 0.0), "Position1")
+    }
+
+    #[test]
+    fn polar_parameter_has_an_end_grip_and_distance_angle_properties() {
+        let (d, r) = polar_fixture();
+        let g = super::super::grips(&d, r);
+        let end = g.iter().find(|g| g.node == 1 && g.part == super::super::GripPart::End).expect("the polar grip is shown");
+        assert_eq!((end.at.x, end.at.y), (4.0, 1.0));
+        assert_eq!(end.shape, super::super::GripShape::Linear);
+
+        let (_, props) = super::super::custom_properties(&d, r).expect("a dynamic block reference");
+        let dist = props.iter().find(|p| p.name == "Distance1").expect("Distance1 property");
+        assert_eq!(dist.value, "3.0000");
+        let angle = props.iter().find(|p| p.name == "Distance1 Angle").expect("Distance1 Angle property");
+        assert_eq!(angle.value, "0.0000");
+    }
+
+    #[test]
+    fn dragging_a_polar_grip_changes_its_distance_and_angle_together() {
+        let (mut d, r) = polar_fixture();
+        drag_grip(&mut d, r, 1, super::super::GripPart::End, Vec2::new(1.0, 5.0)).expect("the grip can be dragged");
+        let (_, props) = super::super::custom_properties(&d, r).expect("a dynamic block reference");
+        let dist = props.iter().find(|p| p.name == "Distance1").expect("Distance1 property");
+        assert_eq!(dist.value, "4.0000");
+        let angle = props.iter().find(|p| p.name == "Distance1 Angle").expect("Distance1 Angle property");
+        assert_eq!(angle.value, "90.0000");
+    }
+
+    #[test]
+    fn set_property_changes_a_polar_distance_and_angle_independently() {
+        let (mut d, r) = polar_fixture();
+        set_property(&mut d, r, "Distance1", "6").expect("the distance can be set");
+        let (_, props) = super::super::custom_properties(&d, r).expect("a dynamic block reference");
+        assert_eq!(props.iter().find(|p| p.name == "Distance1").unwrap().value, "6.0000");
+        assert_eq!(props.iter().find(|p| p.name == "Distance1 Angle").unwrap().value, "0.0000");
+
+        set_property(&mut d, r, "Distance1 Angle", "90").expect("the angle can be set");
+        let (_, props) = super::super::custom_properties(&d, r).expect("a dynamic block reference");
+        let dist = props.iter().find(|p| p.name == "Distance1").unwrap().value.parse::<f64>().unwrap();
+        assert!((dist - 6.0).abs() < 1e-6, "{dist}");
+        assert_eq!(props.iter().find(|p| p.name == "Distance1 Angle").unwrap().value, "90.0000");
+    }
+
+    #[test]
+    fn xy_parameter_has_one_position_grip_and_x_y_properties() {
+        let (d, r) = xy_fixture();
+        let g = super::super::grips(&d, r);
+        assert_eq!(g.iter().filter(|g| g.node == 1).count(), 1, "one combined grip, not two");
+        let at = g.iter().find(|g| g.node == 1).expect("the xy grip is shown");
+        assert_eq!(at.part, super::super::GripPart::End);
+        assert_eq!(at.shape, super::super::GripShape::Point);
+        assert_eq!((at.at.x, at.at.y), (4.0, 5.0));
+
+        let (_, props) = super::super::custom_properties(&d, r).expect("a dynamic block reference");
+        assert_eq!(props.iter().find(|p| p.name == "Position1 X").unwrap().value, "3.0000");
+        assert_eq!(props.iter().find(|p| p.name == "Position1 Y").unwrap().value, "4.0000");
+    }
+
+    #[test]
+    fn dragging_an_xy_grip_moves_both_coordinates_at_once() {
+        let (mut d, r) = xy_fixture();
+        drag_grip(&mut d, r, 1, super::super::GripPart::End, Vec2::new(2.0, 2.0)).expect("the grip can be dragged");
+        let (_, props) = super::super::custom_properties(&d, r).expect("a dynamic block reference");
+        assert_eq!(props.iter().find(|p| p.name == "Position1 X").unwrap().value, "1.0000");
+        assert_eq!(props.iter().find(|p| p.name == "Position1 Y").unwrap().value, "1.0000");
+    }
+
+    #[test]
+    fn set_property_changes_an_xy_position_independently() {
+        let (mut d, r) = xy_fixture();
+        set_property(&mut d, r, "Position1 X", "10").expect("the x position can be set");
+        let (_, props) = super::super::custom_properties(&d, r).expect("a dynamic block reference");
+        assert_eq!(props.iter().find(|p| p.name == "Position1 X").unwrap().value, "10.0000");
+        assert_eq!(props.iter().find(|p| p.name == "Position1 Y").unwrap().value, "4.0000");
     }
 }

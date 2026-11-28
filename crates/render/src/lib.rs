@@ -874,6 +874,103 @@ fn append_clipped(dst: &mut DisplayList, src: &DisplayList, clip: &Clip) {
     }
 }
 
+/// An [`cadcraft_doc::InsertClip`]'s boundary, in world coordinates, as a clip region for the
+/// block reference's own expanded contents: `None` when the clip is off, has fewer than three
+/// usable points or no area ([`clip::PolyClip::new`]'s validation; XCLIP already enforces this
+/// on input, but a boundary could also arrive through a future hostile DXF/DWG SPATIAL_FILTER
+/// import). `xf` is the reference's full transform (chained after any enclosing block or
+/// viewport); the boundary is stored in the same block-definition coordinates as the block's own
+/// entities, so the same transform places it in world space.
+///
+/// `content_bounds` (the unclipped contents' own world-space bounds) sizes the rectangle XCLIP's
+/// INVERT is bounded by: the kept-outside region is this rectangle, padded well past the
+/// contents, minus the boundary. An infinite primitive (XLINE/RAY) inside an inverted clip is
+/// therefore capped to that padded rectangle rather than drawn to true infinity; a non-inverted
+/// clip is unaffected (it already caps infinite primitives to its own boundary, as a viewport
+/// clip does).
+fn insert_clip_poly(clip: &cadcraft_doc::InsertClip, xf: Mat3, content_bounds: Bounds2) -> Option<clip::PolyClip> {
+    let pts: Vec<Vec2> = clip.boundary.vertices.iter().map(|v| xf.apply(v.p)).collect();
+    if !clip.inverted {
+        return clip::PolyClip::new(&pts);
+    }
+    if content_bounds.is_empty() || !(content_bounds.min.is_finite() && content_bounds.max.is_finite()) {
+        return None;
+    }
+    let pad = (content_bounds.width() + content_bounds.height()).max(1.0) * 4.0;
+    clip::PolyClip::new_inverted(&pts, content_bounds.expand(pad))
+}
+
+/// Append `src` (a block reference's own expanded, unclipped contents) to `dst`, clipped to
+/// `poly` (its XCLIP boundary in world space). Like [`append_clipped`]'s polygon path, but also
+/// carries [`DisplayList::prim_layers`] (duplicated per clipped piece, for PDF layers) and drops
+/// [`DisplayList::pens`] and [`DisplayList::texts`]: clipped block content always draws as plain
+/// geometry, never with a plot style's own end/join/fill pens (a rare combination; the pens would
+/// need re-deriving per clipped piece) or as plot text standing in for a filled glyph outline
+/// (the same fallback already used for a glyph a viewport clip cuts, see [`PlotText::CLIPPED`]).
+fn append_insert_clipped(dst: &mut DisplayList, src: &DisplayList, poly: &clip::PolyClip) {
+    let tracked = !src.prim_layers.is_empty();
+    for (i, p) in src.prims.iter().enumerate() {
+        let pts = src.points(p);
+        match p.kind {
+            Kind::Polyline => {
+                for piece in poly.clip_polyline(pts) {
+                    push_raw(dst, p, Kind::Polyline, &piece);
+                }
+            }
+            Kind::Tris | Kind::Mask => {
+                let t = poly.clip_triangles(pts);
+                push_raw(dst, p, p.kind, &t);
+            }
+            Kind::Point => {
+                if let Some(q) = pts.first()
+                    && poly.contains(*q)
+                {
+                    push_raw(dst, p, Kind::Point, &[*q]);
+                }
+            }
+            Kind::Infinite { ray } => {
+                if let (Some(base), Some(dir)) = (pts.first(), pts.get(1)) {
+                    for piece in poly.clip_infinite(*base, *dir, ray) {
+                        push_raw(dst, p, Kind::Polyline, &piece);
+                    }
+                }
+            }
+        }
+        if tracked {
+            let layer = src.prim_layers.get(i).copied().unwrap_or(NO_LAYER);
+            while dst.prim_layers.len() < dst.prims.len() {
+                dst.prim_layers.push(layer);
+            }
+        }
+    }
+}
+
+/// Append `src` to `dst` in full, unclipped: as [`append`], but available on every target (used
+/// when a block reference's own XCLIP boundary turned out unusable, so its contents draw whole
+/// rather than being lost).
+fn append_whole(dst: &mut DisplayList, src: DisplayList) {
+    let (verts, tris, prims) = (dst.verts.len() as u32, dst.tris.len() as u32, dst.prims.len() as u32);
+    if !src.pens.is_empty() {
+        dst.pens.resize(dst.prims.len(), Pen::default());
+    }
+    dst.prims.extend(src.prims.into_iter().map(|mut p| {
+        p.start += if matches!(p.kind, Kind::Tris | Kind::Mask) { tris } else { verts };
+        p
+    }));
+    dst.verts.extend(src.verts);
+    dst.tris.extend(src.tris);
+    dst.prim_layers.extend(src.prim_layers);
+    dst.texts.extend(src.texts.into_iter().map(|mut t| {
+        if t.prim < PlotText::CLIPPED {
+            t.prim += prims;
+        }
+        t
+    }));
+    dst.pens.extend(src.pens);
+    dst.bounds = dst.bounds.union(&src.bounds);
+    dst.expanded = dst.expanded.saturating_add(src.expanded);
+}
+
 fn push_raw(dst: &mut DisplayList, p: &DPrim, kind: Kind, pts: &[Vec2]) {
     let min = match kind {
         Kind::Polyline => 2,
@@ -1679,24 +1776,54 @@ fn insert(b: &mut Builder, ctx: &Ctx, e: &Entity, ins: &cadcraft_doc::Insert, rg
     if let Some(blk) = ctx.d.block(&ins.block) {
         let cols = ins.cols.clamp(1, 10_000);
         let rows = ins.rows.clamp(1, 10_000);
-        'copies: for r in 0..rows {
-            for c in 0..cols {
-                if !b.expand() {
-                    break 'copies;
-                }
-                let off = Vec2::new(ins.col_spacing * f64::from(c), ins.row_spacing * f64::from(r)).rotate(ins.rotation);
-                let m = Mat3::translate(off).then_before(ins.transform(blk.base.xy()));
-                let sub = Ctx { block_pstyle: b.named, block_transparency: b.transparency, ..sub_ctx(ctx, e, m) };
-                for be in blk.entities.iter() {
-                    // Constant/visible attribute definitions inside blocks are not drawn; attribs are.
-                    if matches!(be.kind, EntityKind::AttDef(_)) {
-                        continue;
-                    }
-                    if !b.expand() {
+        // XCLIP (crates/doc InsertClip): the boundary is in block-definition coordinates, so it
+        // is transformed by the reference's own insertion transform like the block's contents.
+        // It applies to the primary insertion only (an MINSERT array shares one boundary at the
+        // reference's own placement; AutoCAD's XCLIP does not offer one per array copy either).
+        let base_m = ins.transform(blk.base.xy());
+        let xclip = ins.clip.as_ref().filter(|c| c.on);
+        // With an active clip, the copies draw into their own list first so it can be clipped as
+        // a whole before joining `b`'s (mirrors the layout viewport's clip path in `contents`).
+        let mut clip_sub = xclip.map(|_| Builder {
+            list: DisplayList::default(),
+            opts: b.opts,
+            plotting: b.plotting,
+            styles: b.styles,
+            named: b.named,
+            shared_budget: b.shared_budget,
+            transparency: b.transparency,
+        });
+        {
+            let dst: &mut Builder = clip_sub.as_mut().unwrap_or(b);
+            'copies: for r in 0..rows {
+                for c in 0..cols {
+                    if !dst.expand() {
                         break 'copies;
                     }
-                    entity(b, &sub, be);
+                    let off = Vec2::new(ins.col_spacing * f64::from(c), ins.row_spacing * f64::from(r)).rotate(ins.rotation);
+                    let m = Mat3::translate(off).then_before(base_m);
+                    let sub = Ctx { block_pstyle: dst.named, block_transparency: dst.transparency, ..sub_ctx(ctx, e, m) };
+                    for be in blk.entities.iter() {
+                        // Constant/visible attribute definitions inside blocks are not drawn; attribs are.
+                        if matches!(be.kind, EntityKind::AttDef(_)) {
+                            continue;
+                        }
+                        if !dst.expand() {
+                            break 'copies;
+                        }
+                        entity(dst, &sub, be);
+                    }
                 }
+            }
+        }
+        if let (Some(cb), Some(xc)) = (clip_sub, xclip) {
+            b.list.expanded = b.list.expanded.saturating_add(cb.list.expanded);
+            match insert_clip_poly(xc, ctx.xf.then_before(base_m), cb.list.bounds) {
+                Some(poly) => append_insert_clipped(&mut b.list, &cb.list, &poly),
+                // No usable boundary (off, or a degenerate one past validation, e.g. a future
+                // DXF/DWG import of hostile SPATIAL_FILTER data): draw the contents in full
+                // rather than losing them.
+                None => append_whole(&mut b.list, cb.list),
             }
         }
     }

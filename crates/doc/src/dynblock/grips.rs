@@ -230,6 +230,50 @@ pub fn grips(d: &Drawing, insert: Handle) -> Vec<DynGrip> {
                     });
                 }
             }
+            ParameterKind::Polar { base, end, label, .. } => {
+                let (b, e) = match r.values.get(&p.node) {
+                    Some(Value::Points { base, end }) => (*base, *end),
+                    _ => (*base, *end),
+                };
+                // Like Rotation, the real grip id for the one draggable point is at index 1 (the
+                // base point has no grip of its own): dragging it changes the distance and the
+                // angle together, the single stretch arrow AutoCAD shows for a polar parameter.
+                if shown(p.node, grip(1)) {
+                    let u = e - b;
+                    let u = if u.len() > 1e-12 { u * (1.0 / u.len()) } else { Vec3::new(1.0, 0.0, 0.0) };
+                    let at = world(e);
+                    out.push(DynGrip {
+                        node: p.node,
+                        part: GripPart::End,
+                        shape: GripShape::Linear,
+                        at,
+                        dir: toward(e, u),
+                        property: label.clone(),
+                        choices: Vec::new(),
+                    });
+                }
+            }
+            ParameterKind::Xy { end, label, .. } => {
+                let e = match r.values.get(&p.node) {
+                    Some(Value::Points { end, .. }) => *end,
+                    _ => *end,
+                };
+                // A real XY parameter's reference grip is one square at its current x/y
+                // position, like Point's own grip — not two separate grips for the x and y
+                // distances.
+                if shown(p.node, grip(1)) {
+                    let at = world(e);
+                    out.push(DynGrip {
+                        node: p.node,
+                        part: GripPart::End,
+                        shape: GripShape::Point,
+                        at,
+                        dir: Vec2::ZERO,
+                        property: label.clone(),
+                        choices: Vec::new(),
+                    });
+                }
+            }
             ParameterKind::Flip { base, end, label, .. } => {
                 // A real flip grip's own position is at the parameter's base point (confirmed
                 // against a real BLOCKFLIPGRIP object); this build writes no separate grip

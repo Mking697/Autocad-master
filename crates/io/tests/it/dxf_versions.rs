@@ -2,7 +2,7 @@
 
 use cadcraft_color::{Color, Rgb};
 use cadcraft_doc::*;
-use cadcraft_geom::Vec3;
+use cadcraft_geom::{PolyVertex, Vec2, Vec3};
 use cadcraft_io::{SaveOptions, Version, read, save_version, write, write_dxf, write_with};
 
 const INTL: &str = "图号 Café Ø 😀";
@@ -74,13 +74,14 @@ fn first_table(d: &Drawing) -> Option<Table> {
     d.model.iter().find_map(|e| if let EntityKind::Table(t) = &e.kind { Some(t.clone()) } else { None })
 }
 
-/// ASCII and binary DXF at every version declare it, encode text the version's way and read
+/// ASCII and binary DXF at every structurally-modern version (R2000 and later; R12 has its own
+/// writer and tests, see `dxf_write_r12.rs`) declare it, encode text the version's way and read
 /// back to the same drawing as the R2000 file.
 #[test]
 fn dxf_at_every_version_reads_back_the_same() {
     let d = sample();
     let reference = write_dxf(&read(write_dxf(&d).as_bytes(), "x.dxf").unwrap());
-    for v in Version::ALL {
+    for v in Version::ALL.into_iter().filter(|v| *v >= Version::R2000) {
         for binary in [false, true] {
             let bytes = write_with(&d, "x.dxf", &opts(v, binary)).unwrap();
             let what = format!("{v} binary={binary}");
@@ -112,7 +113,7 @@ fn r2000_ascii_is_unchanged() {
 fn default_version_is_the_drawings_own() {
     let d = sample();
     assert_eq!(acadver(&write(&d, "x.dxf").unwrap()), "AC1032");
-    for (file, saved) in [("AC1015", "AC1015"), ("AC1024", "AC1024"), ("AC1009", "AC1015"), ("AC1040", "AC1032")] {
+    for (file, saved) in [("AC1015", "AC1015"), ("AC1024", "AC1024"), ("AC1009", "AC1009"), ("AC1012", "AC1014"), ("AC1040", "AC1032")] {
         let mut d = sample();
         d.header.set_str("ACADVER", file);
         assert_eq!(acadver(&write(&d, "x.dxf").unwrap()), saved, "{file}");
@@ -127,13 +128,15 @@ fn binary_is_for_dxf_only() {
     assert!(write_with(&sample(), "x.svg", &SaveOptions { version: None, binary: true }).is_err());
 }
 
-/// DWG at every version is that version and keeps the drawing: merged table cells, and from
-/// 2004 true colours, transparency and table styles (R2000 DWG has none of those).
+/// DWG at every structurally-modern version (R2000 and later: the TABLE entity this drawing
+/// uses needs AC1018/2004; R12 and R14 DWG have their own dedicated tests below) is that version
+/// and keeps the drawing: merged table cells, and from 2004 true colours, transparency and table
+/// styles (R2000 DWG has none of those).
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn dwg_at_every_version_reads_back() {
     let d = sample();
-    for v in Version::ALL {
+    for v in Version::ALL.into_iter().filter(|v| *v >= Version::R2000) {
         let dwg = write_with(&d, "x.dwg", &opts(v, false)).unwrap();
         assert_eq!(cadcraft_dwg::version(&dwg).as_deref(), Some(v.code()), "{v}");
         let back = read(&dwg, "x.dwg").unwrap();
@@ -158,4 +161,80 @@ fn dwg_default_is_at_least_2004() {
     let from_r2000 = read(write_dxf(&sample()).as_bytes(), "x.dxf").unwrap();
     assert_eq!(cadcraft_dwg::version(&write(&from_r2000, "x.dwg").unwrap()).as_deref(), Some("AC1018"));
     assert_eq!(cadcraft_dwg::version(&write(&sample(), "x.dwg").unwrap()).as_deref(), Some("AC1032"));
+}
+
+/// A drawing using only what R12 (AC1009) and R14 (AC1014) can represent: no true colour,
+/// transparency, named plot style or TABLE entity (all postdate both).
+fn legacy_sample() -> Drawing {
+    let mut d = Drawing::new_metric();
+    d.layers.push(Layer { name: "Fancy".into(), color: Color::Index(1), ..Layer::default() });
+    let fancy = Common { layer: "Fancy".into(), color: Color::Index(3), ..Common::default() };
+    d.add(&Space::Model, fancy, EntityKind::Line(Line { a: Vec3::ZERO, b: Vec3::new(10.0, 5.0, 0.0) })).unwrap();
+    d.add(&Space::Model, Common::default(), EntityKind::Circle(Circle { center: Vec3::new(3.0, 4.0, 0.0), radius: 2.0 })).unwrap();
+    d.add(&Space::Model, Common::default(), text(INTL)).unwrap();
+    let poly = LwPolyline {
+        vertices: vec![PolyVertex::new(Vec2::new(0.0, 0.0)), PolyVertex::new(Vec2::new(5.0, 0.0)), PolyVertex::new(Vec2::new(5.0, 5.0))],
+        closed: true,
+        const_width: 0.0,
+        elevation: 0.0,
+        plinegen: false,
+    };
+    d.add(&Space::Model, Common::default(), EntityKind::LwPolyline(poly)).unwrap();
+    d
+}
+
+/// Saving as R12 writes genuine AC1009 structure: no `100` subclass markers, no `5`/`330`
+/// handle groups, LWPOLYLINE degraded to classic POLYLINE/VERTEX/SEQEND (#FF3).
+#[test]
+fn r12_dxf_is_genuine_pre_r13_structure() {
+    let d = legacy_sample();
+    let bytes = write_with(&d, "x.dxf", &opts(Version::R12, false)).unwrap();
+    assert_eq!(acadver(&bytes), "AC1009");
+    let text = String::from_utf8(bytes).unwrap();
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    for pair in lines.chunks(2) {
+        if let [code, _] = pair {
+            assert_ne!(*code, "100", "R12 has no subclass markers: {text}");
+            assert_ne!(*code, "5", "R12 (as CADCraft writes it) has no object handles: {text}");
+        }
+    }
+    assert!(text.contains("LINE"), "{text}");
+    assert!(text.contains("CIRCLE"), "{text}");
+    assert!(text.contains("TEXT"), "{text}");
+    assert!(text.contains("POLYLINE") && !text.contains("LWPOLYLINE"), "LWPOLYLINE degrades to POLYLINE: {text}");
+    assert!(text.contains("SEQEND"), "{text}");
+}
+
+/// Binary R12 DXF (a distinct pre-R13 binary layout) isn't implemented: asking for it is an
+/// error, not silently wrong bytes.
+#[test]
+fn binary_r12_dxf_is_rejected_not_silently_wrong() {
+    let e = write_with(&legacy_sample(), "x.dxf", &opts(Version::R12, true)).unwrap_err().to_string();
+    assert!(e.to_ascii_lowercase().contains("r12"), "{e}");
+}
+
+/// R12 DWG isn't implemented yet: asking for it is an explicit error, never some other version
+/// written under the R12 name.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn r12_dwg_is_rejected_not_silently_wrong() {
+    let e = write_with(&legacy_sample(), "x.dwg", &opts(Version::R12, false)).unwrap_err().to_string();
+    assert!(e.to_ascii_lowercase().contains("r12") || e.contains("AC1009"), "{e}");
+}
+
+/// R14 (AC1014) DWG round-trips a drawing of what R14 can represent: the acadrust-backed DWG
+/// bridge already knows how to write that version (#FF3); CADCraft's own part is honouring the
+/// version choice end to end.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn r14_dwg_round_trips() {
+    let d = legacy_sample();
+    let dwg = write_with(&d, "x.dwg", &opts(Version::R14, false)).unwrap();
+    assert_eq!(cadcraft_dwg::version(&dwg).as_deref(), Some("AC1014"));
+    let back = read(&dwg, "x.dwg").unwrap();
+    assert_eq!(save_version(&back), Version::R14);
+    assert_eq!(back.model.len(), d.model.len());
+    assert_eq!(first_text(&back).as_deref(), Some(INTL));
+    assert!(back.model.iter().any(|e| matches!(e.kind, EntityKind::Line(_))));
+    assert!(back.model.iter().any(|e| matches!(e.kind, EntityKind::Circle(_))));
 }

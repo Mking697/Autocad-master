@@ -4,6 +4,12 @@
 /// also serves the releases after it (2018 is still AutoCAD's current format).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Version {
+    /// AutoCAD Release 12 (AC1009); shared with Release 11, the last pre-R13 format family. No
+    /// subclass markers, no mandatory object handles, no `CLASSES`/`OBJECTS` sections.
+    R12,
+    /// AutoCAD Release 14 (AC1014): the last version before AutoCAD 2000 introduced true colour,
+    /// lineweights and named plot styles.
+    R14,
     /// AutoCAD 2000/2002 (AC1015).
     R2000,
     /// AutoCAD 2004–2006 (AC1018).
@@ -21,11 +27,14 @@ pub enum Version {
 
 impl Version {
     /// Every version, oldest first.
-    pub const ALL: [Version; 6] = [Version::R2000, Version::R2004, Version::R2007, Version::R2010, Version::R2013, Version::R2018];
+    pub const ALL: [Version; 8] =
+        [Version::R12, Version::R14, Version::R2000, Version::R2004, Version::R2007, Version::R2010, Version::R2013, Version::R2018];
 
     /// The `$ACADVER` code ("AC1032").
     pub fn code(self) -> &'static str {
         match self {
+            Version::R12 => "AC1009",
+            Version::R14 => "AC1014",
             Version::R2000 => "AC1015",
             Version::R2004 => "AC1018",
             Version::R2007 => "AC1021",
@@ -35,9 +44,12 @@ impl Version {
         }
     }
 
-    /// The release year that names the version ("2018").
+    /// The release name AutoCAD itself uses ("12", "2018"): a plain release number for the two
+    /// pre-2000 versions (as "R12"/"R14" are usually written), the release year from 2000 on.
     pub fn year(self) -> &'static str {
         match self {
+            Version::R12 => "12",
+            Version::R14 => "14",
             Version::R2000 => "2000",
             Version::R2004 => "2004",
             Version::R2007 => "2007",
@@ -55,8 +67,8 @@ impl Version {
     }
 
     /// The version to save a file of `$ACADVER` `code` in: the same version when CADCraft writes
-    /// it, else the nearest one it does (R2000 for older files, 2018 for newer ones); `None` when
-    /// the code isn't a version code at all.
+    /// it, else the nearest newer one it does (the oldest, R12, for anything older than that;
+    /// 2018 for anything newer); `None` when the code isn't a version code at all.
     pub fn for_acadver(code: &str) -> Option<Version> {
         let code = code.trim();
         if let Some(v) = Version::ALL.into_iter().find(|v| v.code().eq_ignore_ascii_case(code)) {
@@ -65,7 +77,9 @@ impl Version {
         code.get(..2).filter(|p| p.eq_ignore_ascii_case("AC"))?;
         let n = code.get(2..).filter(|d| d.bytes().all(|b| b.is_ascii_digit())).and_then(|d| d.parse::<u32>().ok())?;
         Some(match n {
-            ..1018 => Version::R2000,
+            ..1009 => Version::R12,
+            1009..1014 => Version::R14,
+            1014..1018 => Version::R2000,
             1018..1021 => Version::R2004,
             1021..1024 => Version::R2007,
             1024..1027 => Version::R2010,
@@ -106,12 +120,25 @@ mod tests {
 
     #[test]
     fn file_versions_map_to_the_nearest_writable_one() {
-        assert_eq!(Version::for_acadver("AC1009"), Some(Version::R2000));
-        assert_eq!(Version::for_acadver("AC1014"), Some(Version::R2000));
+        assert_eq!(Version::for_acadver("AC1009"), Some(Version::R12));
+        assert_eq!(Version::for_acadver("AC1012"), Some(Version::R14), "R13 isn't written: round up to R14");
+        assert_eq!(Version::for_acadver("AC1014"), Some(Version::R14));
         assert_eq!(Version::for_acadver("AC1024"), Some(Version::R2010));
         assert_eq!(Version::for_acadver("AC1035"), Some(Version::R2018));
+        assert_eq!(Version::for_acadver("AC1000"), Some(Version::R12), "older than anything written: round up to the oldest, R12");
         assert_eq!(Version::for_acadver("MC0.0"), None);
         assert_eq!(Version::for_acadver("AC"), None);
         assert_eq!(Version::for_acadver("AC99999999999999999999"), None);
+    }
+
+    #[test]
+    fn r12_and_r14_round_trip_their_own_names() {
+        assert_eq!(Version::parse("12"), Some(Version::R12));
+        assert_eq!(Version::parse("R12"), Some(Version::R12));
+        assert_eq!(Version::parse("r14"), Some(Version::R14));
+        assert_eq!(Version::parse("AC1009"), Some(Version::R12));
+        assert_eq!(Version::parse("ac1014"), Some(Version::R14));
+        assert!(Version::R12 < Version::R14 && Version::R14 < Version::R2000, "chronological ordering");
+        assert!(!Version::R12.utf8() && !Version::R14.utf8());
     }
 }

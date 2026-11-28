@@ -39,8 +39,14 @@ fn default_save_version_applies_to_new_drawings_and_persists() {
     let mut b = CadApp::new(Session::empty(), Services::default());
     b.load_prefs(&app.prefs_json());
     assert_eq!(b.ui.save_version, "2004");
+    // "R14" used to be rejected here (no writer supported it); it's a genuinely valid, now
+    // fully round-tripped version (see crates/dxf/src/version.rs, crates/dwg), so a saved
+    // preference of "R14" must actually apply, not be silently ignored like a real bad value.
     b.load_prefs(r#"{"saveVersion": "R14"}"#);
-    assert_eq!(b.ui.save_version, "2004");
+    assert_eq!(b.ui.save_version, "14");
+    // A genuinely unknown version string is still ignored, keeping whatever was set before.
+    b.load_prefs(r#"{"saveVersion": "R9"}"#);
+    assert_eq!(b.ui.save_version, "14");
     b.start("ui.resetpalettes");
-    assert_eq!(b.ui.save_version, "2004");
+    assert_eq!(b.ui.save_version, "14");
 }

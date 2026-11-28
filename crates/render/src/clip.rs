@@ -247,26 +247,52 @@ fn clean_polygon(pts: Vec<Vec2>) -> Option<Vec<Vec2>> {
 
 /// A clip region bounded by a polygon (even-odd, so self-touching outlines work), with its
 /// edges bucketed into horizontal bands to keep tests fast on large display lists.
+///
+/// Normally the kept region is the polygon's inside. [`PolyClip::new_inverted`] builds a clip
+/// that keeps the *outside* of the polygon instead (XCLIP INVERT), bounded by a caller-supplied
+/// rectangle: that rectangle must contain every point the caller may test or draw (its own
+/// geometry bounds, padded), since nothing outside it is ever kept.
 #[derive(Clone, Debug)]
 pub struct PolyClip {
     poly: Vec<Vec2>,
+    /// Pre-filter bound for segment/point rejection and for clipping infinite lines: the
+    /// polygon's own bounds normally, the inversion's outer rectangle when `invert`.
     bounds: Bounds2,
+    /// The polygon's own bounds, for banding its edges (used to test containment whichever way
+    /// `invert` reads the result).
+    poly_bounds: Bounds2,
     /// Edge indices whose y range meets each band.
     bands: Vec<Vec<u32>>,
     band_h: f64,
-    /// The region as triangles (for clipping fills), with each triangle's bounds.
+    /// The kept region as triangles (for clipping fills), with each triangle's bounds: the
+    /// polygon's own fill normally, or the outer rectangle minus the polygon when `invert`.
     tris: Vec<([Vec2; 3], Bounds2)>,
+    /// Keep the polygon's outside (within `bounds`) rather than its inside.
+    invert: bool,
 }
 
 impl PolyClip {
     /// A clip region for `poly` (see [`clean_polygon`]); `None` for a degenerate outline.
     pub fn new(poly: &[Vec2]) -> Option<PolyClip> {
+        Self::build(poly, None)
+    }
+    /// A clip region for the outside of `poly`, bounded by `outer` (XCLIP INVERT); `None` for a
+    /// degenerate outline. See the type's own docs for what `outer` must cover.
+    pub fn new_inverted(poly: &[Vec2], outer: Bounds2) -> Option<PolyClip> {
+        Self::build(poly, Some(outer))
+    }
+    fn build(poly: &[Vec2], outer: Option<Bounds2>) -> Option<PolyClip> {
         let poly = clean_polygon(poly.to_vec())?;
-        let bounds = Bounds2::from_points(poly.iter().copied());
-        let band_h = bounds.height() / BANDS as f64;
+        let poly_bounds = Bounds2::from_points(poly.iter().copied());
+        let invert = outer.is_some();
+        let bounds = match outer {
+            Some(o) if !o.is_empty() && o.min.is_finite() && o.max.is_finite() => o.union(&poly_bounds),
+            _ => poly_bounds,
+        };
+        let band_h = poly_bounds.height() / BANDS as f64;
         let mut bands: Vec<Vec<u32>> = vec![Vec::new(); BANDS];
         let n = poly.len();
-        let mut clip = PolyClip { poly: Vec::new(), bounds, bands: Vec::new(), band_h, tris: Vec::new() };
+        let mut clip = PolyClip { poly: Vec::new(), bounds, poly_bounds, bands: Vec::new(), band_h, tris: Vec::new(), invert };
         for i in 0..n {
             let (Some(a), Some(b)) = (poly.get(i), poly.get((i + 1) % n)) else { continue };
             let (lo, hi) = (clip.band(a.y.min(b.y)), clip.band(a.y.max(b.y)));
@@ -274,7 +300,10 @@ impl PolyClip {
                 band.push(i as u32);
             }
         }
-        let tris = crate::fill::triangulate_evenodd(std::slice::from_ref(&poly));
+        // The kept region's fill: the polygon itself, or (inverted) the outer rectangle with the
+        // polygon as a hole — even-odd triangulation handles the hole without extra bookkeeping.
+        let loops: Vec<Vec<Vec2>> = if invert { vec![bounds.corners().to_vec(), poly.clone()] } else { vec![poly.clone()] };
+        let tris = crate::fill::triangulate_evenodd(&loops);
         clip.tris = tris
             .as_chunks::<3>()
             .0
@@ -294,7 +323,7 @@ impl PolyClip {
         self.bounds
     }
     fn band(&self, y: f64) -> usize {
-        let k = (y - self.bounds.min.y) / self.band_h;
+        let k = (y - self.poly_bounds.min.y) / self.band_h;
         if k.is_finite() && k > 0.0 { (k as usize).min(BANDS - 1) } else { 0 }
     }
     fn edge(&self, i: u32) -> Option<(Vec2, Vec2)> {
@@ -313,7 +342,7 @@ impl PolyClip {
                 inside = !inside;
             }
         }
-        inside
+        if self.invert { !inside } else { inside }
     }
     /// Parameters along `a`→`b` (0..1) where the segment crosses the outline, sorted.
     fn crossings(&self, a: Vec2, b: Vec2) -> Vec<f64> {
@@ -514,6 +543,32 @@ mod tests {
         let area: f64 = t.as_chunks::<3>().0.iter().map(|t| cadcraft_geom::shoelace(t).abs()).sum();
         assert!((area - 75.0).abs() < 1e-6, "{area}");
         assert!(t.iter().all(|p| !(p.x > 5.0 + 1e-9 && p.y > 5.0 + 1e-9)));
+    }
+
+    #[test]
+    fn inverted_clip_keeps_the_outside() {
+        // A 2x2 square hole at the centre of a 10x10 outer rectangle (XCLIP INVERT).
+        let hole = [Vec2::new(4.0, 4.0), Vec2::new(6.0, 4.0), Vec2::new(6.0, 6.0), Vec2::new(4.0, 6.0)];
+        let outer = Bounds2::new(Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0));
+        let c = PolyClip::new_inverted(&hole, outer).unwrap();
+        // Inside the hole is excluded; everywhere else in the outer rectangle is kept.
+        assert!(!c.contains(Vec2::new(5.0, 5.0)));
+        assert!(c.contains(Vec2::new(1.0, 1.0)) && c.contains(Vec2::new(9.0, 9.0)));
+        // A line crossing straight through the hole loses its middle third.
+        let pieces = c.clip_polyline(&[Vec2::new(0.0, 5.0), Vec2::new(10.0, 5.0)]);
+        assert_eq!(pieces.len(), 2, "{pieces:?}");
+        assert!(pieces[0][1].near(Vec2::new(4.0, 5.0), 1e-9));
+        assert!(pieces[1][0].near(Vec2::new(6.0, 5.0), 1e-9));
+        // A fill over the whole outer rectangle loses only the hole's area (4 of 100).
+        let fill =
+            [Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), Vec2::new(10.0, 10.0), Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0), Vec2::new(0.0, 10.0)];
+        let t = c.clip_triangles(&fill);
+        let area: f64 = t.as_chunks::<3>().0.iter().map(|t| cadcraft_geom::shoelace(t).abs()).sum();
+        assert!((area - 96.0).abs() < 1e-6, "{area}");
+        // Nothing drawn inside the hole itself.
+        assert!(t.iter().all(|p| !(p.x > 4.0 + 1e-9 && p.x < 6.0 - 1e-9 && p.y > 4.0 + 1e-9 && p.y < 6.0 - 1e-9)));
+        // A point wholly outside the outer rectangle is never kept, inverted or not.
+        assert!(!c.contains(Vec2::new(20.0, 20.0)));
     }
 
     #[test]

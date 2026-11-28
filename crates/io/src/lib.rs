@@ -12,6 +12,7 @@ mod dxf_mleader_style;
 mod dxf_read;
 mod dxf_table;
 mod dxf_write;
+mod dxf_write_r12;
 mod dxf_xref;
 pub mod pdf;
 pub mod plotter;
@@ -88,6 +89,17 @@ pub fn write(d: &Drawing, name: &str) -> Result<Vec<u8>> {
 pub fn write_with(d: &Drawing, name: &str, opts: &SaveOptions) -> Result<Vec<u8>> {
     let version = opts.version.unwrap_or_else(|| save_version(d));
     match ext(name).as_str() {
+        // R12 predates the AC1013 structure break (subclass markers, mandatory handles, the
+        // OBJECTS/CLASSES sections) every other version shares, so it has its own writer rather
+        // than a version gate inside `dxf_write` (see its module doc comment). Binary R12 DXF
+        // (the pre-R13 binary DXF layout, distinct from the one `write_binary` writes) isn't
+        // implemented yet; that is reported rather than silently writing the wrong bytes.
+        "dxf" | "" if version == Version::R12 => {
+            if opts.binary {
+                return Err(IoError::Format("binary R12 DXF isn't implemented yet; save as ASCII R12, or binary at 2000 or later".into()));
+            }
+            Ok(dxf_write_r12::write_r12(d).into_bytes())
+        }
         "dxf" | "" => {
             let tags = dxf_write::tags(d, version);
             Ok(if opts.binary {
@@ -98,7 +110,12 @@ pub fn write_with(d: &Drawing, name: &str, opts: &SaveOptions) -> Result<Vec<u8>
         }
         // The DWG bridge reads our R2000 DXF and writes the DWG at the version asked for. Without
         // one, at least 2004: R2000 DWG has no true colours, transparency, table styles or
-        // gradients, so a drawing from an R2000 DXF doesn't lose them by default.
+        // gradients, so a drawing from an R2000 DXF doesn't lose them by default. R12 (AC1009)
+        // DWG isn't implemented yet (CADCraft's R12 support is DXF-only so far): asking for it
+        // is reported rather than silently written as some other version.
+        "dwg" if !opts.binary && version == Version::R12 => {
+            Err(IoError::Format("R12 (AC1009) DWG isn't implemented yet; save as R14 or later DWG, or as R12 DXF".into()))
+        }
         "dwg" if !opts.binary => {
             let version = opts.version.unwrap_or_else(|| version.max(Version::R2004));
             cadcraft_dwg::dxf_to_dwg_as(dxf_write::dwg_bridge(d, version).as_bytes(), version.code()).map_err(IoError::Format)

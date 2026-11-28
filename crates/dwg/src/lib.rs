@@ -28,7 +28,7 @@
 
 /// DWG version codes we can write.
 pub const VERSIONS: &[(&str, &str)] =
-    &[("AC1015", "2000"), ("AC1018", "2004"), ("AC1021", "2007"), ("AC1024", "2010"), ("AC1027", "2013"), ("AC1032", "2018")];
+    &[("AC1014", "14"), ("AC1015", "2000"), ("AC1018", "2004"), ("AC1021", "2007"), ("AC1024", "2010"), ("AC1027", "2013"), ("AC1032", "2018")];
 
 /// True when the bytes look like a DWG file (`AC10xx` magic).
 pub fn is_dwg(bytes: &[u8]) -> bool {
@@ -470,6 +470,7 @@ mod native {
     /// whatever version the DXF declares.
     pub fn dxf_to_dwg_as(dxf: &[u8], version: &str) -> Result<Vec<u8>, String> {
         let v = match version.trim().to_ascii_uppercase().as_str() {
+            "AC1014" => acadrust::DxfVersion::AC1014,
             "AC1015" => acadrust::DxfVersion::AC1015,
             "AC1018" => acadrust::DxfVersion::AC1018,
             "AC1021" => acadrust::DxfVersion::AC1021,
