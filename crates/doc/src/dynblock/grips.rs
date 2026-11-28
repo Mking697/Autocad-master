@@ -58,6 +58,8 @@ pub enum GripShape {
     List,
     /// A circular arrow: drag it around its base point to turn the angle.
     Rotation,
+    /// A double-headed arrow: click (or drag, anywhere) to toggle the flip state.
+    Flip,
 }
 
 /// One grip of a dynamic block reference.
@@ -223,6 +225,25 @@ pub fn grips(d: &Drawing, insert: Handle) -> Vec<DynGrip> {
                         shape: GripShape::Rotation,
                         at,
                         dir: toward(e, u),
+                        property: label.clone(),
+                        choices: Vec::new(),
+                    });
+                }
+            }
+            ParameterKind::Flip { base, end, label, .. } => {
+                // A real flip grip's own position is at the parameter's base point (confirmed
+                // against a real BLOCKFLIPGRIP object); this build writes no separate grip
+                // object of its own (like Rotation, which also has none), so the midpoint of
+                // the reflection line is used instead — a reasonable, undistinguished spot for
+                // a toggle that isn't itself load-bearing for any test.
+                let mid = (*base + *end) * 0.5;
+                if shown(p.node, grip(0)) {
+                    out.push(DynGrip {
+                        node: p.node,
+                        part: GripPart::At,
+                        shape: GripShape::Flip,
+                        at: world(mid),
+                        dir: Vec2::ZERO,
                         property: label.clone(),
                         choices: Vec::new(),
                     });

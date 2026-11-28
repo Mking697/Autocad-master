@@ -55,16 +55,18 @@ pub enum PendingParam {
     /// Pairs with no action (see [`cadcraft_doc::dynblock::author_visibility`]).
     Visibility(cadcraft_doc::dynblock::VisibilityParam),
     Rotation(cadcraft_doc::dynblock::RotationParam),
+    Flip(cadcraft_doc::dynblock::FlipParam),
 }
 
 /// An action authored in this session (BACTIONTOOL), paired with [`PendingParam`]: a Stretch
 /// action pairs with a Linear parameter, a Move action with a Point parameter, a Rotate action
-/// with a Rotation parameter.
+/// with a Rotation parameter, a Flip action with a Flip parameter.
 #[derive(Clone, Debug)]
 pub enum PendingAction {
     Stretch(cadcraft_doc::dynblock::StretchAction),
     Move(cadcraft_doc::dynblock::MoveAction),
     Rotate(cadcraft_doc::dynblock::RotateAction),
+    Flip(cadcraft_doc::dynblock::FlipAction),
 }
 
 /// The Block Editor open in a drawing.
@@ -325,13 +327,21 @@ impl DocState {
                 (PendingParam::Rotation(p), Some(PendingAction::Rotate(a))) => {
                     cadcraft_doc::dynblock::author_rotation_rotate(&mut d, &record, p, Some(a))
                 }
+                (PendingParam::Flip(p), None) => cadcraft_doc::dynblock::author_flip_flip(&mut d, &record, p, None),
+                (PendingParam::Flip(p), Some(PendingAction::Flip(a))) => cadcraft_doc::dynblock::author_flip_flip(&mut d, &record, p, Some(a)),
                 (PendingParam::Linear(_), Some(PendingAction::Move(_)))
                 | (PendingParam::Linear(_), Some(PendingAction::Rotate(_)))
+                | (PendingParam::Linear(_), Some(PendingAction::Flip(_)))
                 | (PendingParam::Point(_), Some(PendingAction::Stretch(_)))
                 | (PendingParam::Point(_), Some(PendingAction::Rotate(_)))
+                | (PendingParam::Point(_), Some(PendingAction::Flip(_)))
                 | (PendingParam::Visibility(_), Some(_))
                 | (PendingParam::Rotation(_), Some(PendingAction::Stretch(_)))
-                | (PendingParam::Rotation(_), Some(PendingAction::Move(_))) => {
+                | (PendingParam::Rotation(_), Some(PendingAction::Move(_)))
+                | (PendingParam::Rotation(_), Some(PendingAction::Flip(_)))
+                | (PendingParam::Flip(_), Some(PendingAction::Stretch(_)))
+                | (PendingParam::Flip(_), Some(PendingAction::Move(_)))
+                | (PendingParam::Flip(_), Some(PendingAction::Rotate(_))) => {
                     Err("That action type doesn't pair with the authored parameter type.".into())
                 }
             };

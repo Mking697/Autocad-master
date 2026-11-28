@@ -273,3 +273,62 @@ fn bparameter_rotation_bactiontool_rotate_bsave_round_trips_through_dxf_and_the_
     assert!((swung.a.x - 0.0).abs() < 1e-9 && (swung.a.y - (-2.0)).abs() < 1e-9, "{swung:?}");
     assert!((swung.b.x - 1.0).abs() < 1e-9 && (swung.b.y - (-2.0)).abs() < 1e-9, "{swung:?}");
 }
+
+#[test]
+fn bparameter_flip_bactiontool_flip_bsave_round_trips_through_dxf_and_the_toggle_works() {
+    let (mut s, reference, _swing_in_block) = door_block();
+
+    // Edit the block: author a Flip parameter whose reflection line is the vertical line x = 2
+    // (base (2,0) -> end (2,5)), and pair a Flip action that mirrors the leaf's own width line
+    // (the swing line, (2,0)-(2,1), sits ON that line and so is not selected — it would stay put
+    // either way, which wouldn't prove the mirror actually ran).
+    s.execute("bedit", &json!({ "name": "DOOR2" })).unwrap();
+    let width_in_editor = {
+        let b = s.doc().unwrap();
+        let l = b.model.iter().find(|e| matches!(&e.kind, EntityKind::Line(l) if l.a.x == 0.0 && l.b.x == 2.0 && l.a.y == 0.0)).unwrap();
+        l.handle
+    };
+    let r = s.execute("bparameter", &json!({ "type": "flip", "base": [2.0, 0.0], "end": [2.0, 5.0], "label": "Flip1" })).unwrap();
+    assert_eq!(r["node"], 1);
+    let r = s.execute("bactiontool", &json!({ "type": "flip", "handles": [width_in_editor.hex()], "name": "Flip1" })).unwrap();
+    assert_eq!(r["node"], 2);
+    s.execute("bsave", &json!({})).unwrap();
+    s.execute("bclose", &json!({})).unwrap();
+
+    // In the same session, it already reads as a dynamic block with a working toggle grip.
+    let m = dynblock::dynamic_block(s.doc().unwrap(), "DOOR2").expect("DOOR2 is now a dynamic block");
+    assert_eq!(m.parameters.len(), 1);
+    assert_eq!(m.actions.len(), 1);
+    let g = dynblock::grips(s.doc().unwrap(), reference);
+    let toggle = g.iter().find(|g| g.property == "Flip1").expect("the flip grip is shown");
+    assert_eq!((toggle.at.x, toggle.at.y), (102.0, 2.5), "reference at (100,0), parameter line midpoint (2, 2.5)");
+
+    // The real proof: write it to DXF bytes and reparse them, exactly as a saved file reopens.
+    let dxf = cadcraft_io::write_dxf(s.doc().unwrap());
+    let reopened = cadcraft_io::read_dxf(dxf.as_bytes()).unwrap();
+    let m2 = dynblock::dynamic_block(&reopened, "DOOR2").expect("the dynamic block survives the DXF round trip");
+    assert_eq!(m2.parameters.len(), 1);
+    assert_eq!(m2.actions.len(), 1);
+    let p = &m2.parameters[0];
+    let dynblock::ParameterKind::Flip { base, end, label, base_state_label, flipped_state_label, .. } = &p.kind else { panic!("{p:?}") };
+    assert_eq!((base.x, base.y, end.x, end.y), (2.0, 0.0, 2.0, 5.0));
+    assert_eq!(label, "Flip1");
+    assert_eq!((base_state_label.as_str(), flipped_state_label.as_str()), ("Not flipped", "Flipped"));
+    let a = &m2.actions[0];
+    assert_eq!(a.connections, [(p.node, "Flip".to_string())]);
+    assert!(matches!(a.kind, dynblock::ActionKind::Flip));
+
+    // Setting Flip1 to "Flipped" on the reopened reference mirrors the leaf's own width line
+    // about x = 2: (0,0)-(2,0) -> (4,0)-(2,0); the swing line, on the reflection line and not
+    // selected, is unchanged.
+    let mut reopened = reopened;
+    dynblock::set_property(&mut reopened, reference, "Flip1", "Flipped").unwrap();
+    let EntityKind::Insert(ins) = &reopened.entity(reference).unwrap().kind else { panic!("not a reference") };
+    let b = reopened.block(&ins.block).unwrap();
+    let lines: Vec<Line> = b.entities.iter().filter_map(|e| if let EntityKind::Line(l) = &e.kind { Some(l.clone()) } else { None }).collect();
+    let unselected = lines.iter().find(|l| l.a.x == 2.0 && l.b.y == 1.0).expect("the swing line's copy");
+    assert_eq!((unselected.a.x, unselected.a.y, unselected.b.x, unselected.b.y), (2.0, 0.0, 2.0, 1.0));
+    let mirrored = lines.iter().find(|l| (l.a.x - 4.0).abs() < 1e-9 || (l.b.x - 4.0).abs() < 1e-9).expect("the mirrored width line's copy");
+    assert!((mirrored.a.x - 4.0).abs() < 1e-9 && (mirrored.a.y - 0.0).abs() < 1e-9, "{mirrored:?}");
+    assert!((mirrored.b.x - 2.0).abs() < 1e-9 && (mirrored.b.y - 0.0).abs() < 1e-9, "{mirrored:?}");
+}

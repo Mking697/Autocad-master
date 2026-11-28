@@ -25,8 +25,8 @@ mod grips;
 mod reference;
 pub use apply::{drag_grip, set_property};
 pub use author::{
-    LinearParam, MoveAction, PointParam, RotateAction, RotationParam, StretchAction, VisibilityParam, VisibilityStateDef, author_linear_stretch,
-    author_point_move, author_rotation_rotate, author_visibility,
+    FlipAction, FlipParam, LinearParam, MoveAction, PointParam, RotateAction, RotationParam, StretchAction, VisibilityParam, VisibilityStateDef,
+    author_flip_flip, author_linear_stretch, author_point_move, author_rotation_rotate, author_visibility,
 };
 pub use grips::{DynGrip, GripPart, GripShape, grips};
 pub use reference::{CustomProperty, Reference, Value, custom_properties, reference};
@@ -101,8 +101,11 @@ pub enum ParameterKind {
     Rotation { base: Vec3, end: Vec3, label: String, description: String, values: ValueSet },
     /// Aligns the reference with nearby geometry.
     Alignment { base: Vec3, end: Vec3 },
-    /// Mirrors the objects about a reflection line.
-    Flip { base: Vec3, end: Vec3 },
+    /// Mirrors the objects about the reflection line `base`->`end`: the current state is a
+    /// boolean (`base_state_label`/`flipped_state_label` name its two values, "Not flipped"/
+    /// "Flipped" by default in AutoCAD), not a change in `base`/`end` themselves, which stay
+    /// fixed — unlike every other two-point parameter here.
+    Flip { base: Vec3, end: Vec3, label: String, description: String, base_state_label: String, flipped_state_label: String },
     /// A position (Position1).
     Point { at: Vec3, label: String, description: String },
     /// Named sets of visible objects.
@@ -130,7 +133,8 @@ impl ParameterKind {
             | ParameterKind::Point { label, .. }
             | ParameterKind::Visibility { label, .. }
             | ParameterKind::Lookup { label, .. }
-            | ParameterKind::Rotation { label, .. } => Some(label),
+            | ParameterKind::Rotation { label, .. }
+            | ParameterKind::Flip { label, .. } => Some(label),
             _ => None,
         }
     }
@@ -438,14 +442,28 @@ fn parameter(kind: &str, secs: &[(&str, &[RawTag])]) -> ParameterKind {
             c.real(140);
             ParameterKind::Rotation { base, end, label, description, values: value_set(&mut c) }
         }
-        "BLOCKPOLARPARAMETER" | "BLOCKXYPARAMETER" | "BLOCKALIGNMENTPARAMETER" | "BLOCKFLIPPARAMETER" => {
+        "BLOCKPOLARPARAMETER" | "BLOCKXYPARAMETER" | "BLOCKALIGNMENTPARAMETER" => {
             let (base, end) = two();
             match kind {
                 "BLOCKPOLARPARAMETER" => ParameterKind::Polar { base, end },
                 "BLOCKXYPARAMETER" => ParameterKind::Xy { base, end },
-                "BLOCKALIGNMENTPARAMETER" => ParameterKind::Alignment { base, end },
-                _ => ParameterKind::Flip { base, end },
+                _ => ParameterKind::Alignment { base, end },
             }
+        }
+        "BLOCKFLIPPARAMETER" => {
+            let (base, end) = two();
+            let mut c = Cursor::new(section(secs, "AcDbBlockFlipParameter"));
+            let label = c.string(305);
+            let description = c.string(306);
+            // The base/flipped state names (307/308, "Not flipped"/"Flipped" by default in
+            // AutoCAD) — checked against a real BLOCKFLIPPARAMETER object found inside an
+            // actual AutoCAD-exported DXF file publicly posted by a manufacturer (an L-bracket
+            // dynamic block on its own public product-download page; never any file from an
+            // AutoCAD install on this machine). A real file also carries a label point (1012),
+            // a tooltip (309) and a cross-reference count (96) this build doesn't need.
+            let base_state_label = c.string(307);
+            let flipped_state_label = c.string(308);
+            ParameterKind::Flip { base, end, label, description, base_state_label, flipped_state_label }
         }
         other => ParameterKind::Other { dxf_type: other.to_string() },
     }
@@ -500,7 +518,7 @@ fn action(handle: Handle, node: i32, name: String, kind: &str, secs: &[(&str, &[
         }
         "BLOCKSCALEACTION" => (Vec::new(), ActionKind::Scale),
         "BLOCKROTATEACTION" => rotate(secs),
-        "BLOCKFLIPACTION" => (Vec::new(), ActionKind::Flip),
+        "BLOCKFLIPACTION" => flip(secs),
         "BLOCKARRAYACTION" => (Vec::new(), ActionKind::Array),
         "BLOCKPOLARSTRETCHACTION" => (Vec::new(), ActionKind::PolarStretch),
         other => (Vec::new(), ActionKind::Other { dxf_type: other.to_string() }),
@@ -528,6 +546,21 @@ fn rotate(secs: &[(&str, &[RawTag])]) -> (Vec<(i32, String)>, ActionKind) {
     let property = c.string(303);
     let connections = if property.is_empty() { Vec::new() } else { vec![(node, property)] };
     (connections, ActionKind::Rotate { base })
+}
+
+/// A flip action: its connections to the Flip parameter's own properties
+/// (`AcDbBlockFlipAction`'s 92-95/301-304) — a real file (the same L-bracket sample used for
+/// `BLOCKFLIPPARAMETER` above) carries all four ("Flip", "UpdatedFlip", "UpdatedBase",
+/// "UpdatedEnd"), unlike `AcDbBlockRotateAction`'s single "AngleDelta"; only the first ("Flip",
+/// the toggle itself) is followed here — the other three feed the parameter's own grip location
+/// component, not evaluated here, the same conservative choice `rotate`'s own base-point
+/// connections make.
+fn flip(secs: &[(&str, &[RawTag])]) -> (Vec<(i32, String)>, ActionKind) {
+    let mut c = Cursor::new(section(secs, "AcDbBlockFlipAction"));
+    let node = c.int(92);
+    let property = c.string(301);
+    let connections = if property.is_empty() { Vec::new() } else { vec![(node, property)] };
+    (connections, ActionKind::Flip)
 }
 
 /// A stretch action: its two connections, the frame (72 count, 1011/1021 points), the objects

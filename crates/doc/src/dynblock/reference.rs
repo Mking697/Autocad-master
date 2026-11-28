@@ -265,6 +265,18 @@ pub fn custom_properties(d: &Drawing, insert: Handle) -> Option<(String, Vec<Cus
                 let angle = dir.y.atan2(dir.x).to_degrees();
                 out.push(CustomProperty { name: label.clone(), value: number(d, angle), choices: Vec::new(), editable: true });
             }
+            ParameterKind::Flip { label, base_state_label, flipped_state_label, .. } => {
+                let value = match v {
+                    Some(Value::Text { value }) => value.clone(),
+                    _ => base_state_label.clone(),
+                };
+                out.push(CustomProperty {
+                    name: label.clone(),
+                    value,
+                    choices: vec![base_state_label.clone(), flipped_state_label.clone()],
+                    editable: true,
+                });
+            }
             _ => {}
         }
     }

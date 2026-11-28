@@ -109,10 +109,10 @@ fn current(m: &DynamicBlock, values: &BTreeMap<i32, Value>, node: i32) -> Option
             | ParameterKind::Polar { base, end }
             | ParameterKind::Xy { base, end }
             | ParameterKind::Rotation { base, end, .. }
-            | ParameterKind::Alignment { base, end }
-            | ParameterKind::Flip { base, end },
+            | ParameterKind::Alignment { base, end },
             None,
         ) => Val::Points(*base, *end),
+        (ParameterKind::Flip { base_state_label, .. }, None) => Val::Text(base_state_label.clone()),
         _ => return None,
     })
 }
@@ -314,6 +314,17 @@ pub fn set_property(d: &mut Drawing, insert: Handle, name: &str, value: &str) ->
             plan.set.insert(p.node, Val::Points(b, e2));
             plan.chain(&m, &r.values, p.node, "AngleDelta")?;
         }
+        (ParameterKind::Flip { base_state_label, flipped_state_label, .. }, None) => {
+            let want = value.trim();
+            let state = if want.eq_ignore_ascii_case(flipped_state_label) {
+                flipped_state_label.clone()
+            } else if want.eq_ignore_ascii_case(base_state_label) {
+                base_state_label.clone()
+            } else {
+                return Err(format!("\"{value}\" is not a state of {name}: {base_state_label}, {flipped_state_label}."));
+            };
+            plan.set.insert(p.node, Val::Text(state));
+        }
         _ => return Err(format!("CADCraft can't change {name} yet.")),
     }
     apply(d, insert, &r.definition, &r.values, &plan.set, p.node)
@@ -382,6 +393,13 @@ pub fn drag_grip(d: &mut Drawing, insert: Handle, node: i32, part: super::GripPa
             let e2 = Vec3::new(b.x + radius * angle.cos(), b.y + radius * angle.sin(), e.z);
             plan.set.insert(node, Val::Points(b, e2));
             plan.chain(&m, &r.values, node, "AngleDelta")?;
+        }
+        (ParameterKind::Flip { base_state_label, flipped_state_label, .. }, GripPart::At) => {
+            // A Flip grip is a click-to-toggle arrow, not a drag to a position: wherever `to`
+            // is, dragging it just flips the state.
+            let Some(Val::Text(cur)) = current(&m, &r.values, node) else { return Err("The Flip parameter has no state.".into()) };
+            let next = if cur.eq_ignore_ascii_case(flipped_state_label) { base_state_label.clone() } else { flipped_state_label.clone() };
+            plan.set.insert(node, Val::Text(next));
         }
         _ => return Err("That grip can't be dragged.".into()),
     }
@@ -488,6 +506,7 @@ fn apply(
     let mut new: BTreeMap<i32, Val> = set.clone();
     let mut moves: HashMap<Handle, Vec<(Option<Vec<i32>>, Vec2)>> = HashMap::new();
     let mut rotations: HashMap<Handle, Vec<(Vec2, f64)>> = HashMap::new();
+    let mut flips: HashMap<Handle, Vec<(Vec2, Vec2)>> = HashMap::new();
     let param_of: HashMap<Handle, i32> = m.parameters.iter().map(|p| (p.handle, p.node)).collect();
     for a in &m.actions {
         let changed: Vec<&(i32, String)> = a.connections.iter().filter(|(n, _)| set.contains_key(n)).collect();
@@ -512,6 +531,34 @@ fn apply(
                 }
                 if let Some(c) = copy_of(h) {
                     rotations.entry(c).or_default().push((pivot, ang));
+                }
+            }
+            continue;
+        }
+        if let ActionKind::Flip = &a.kind {
+            // A Flip action's whole selection mirrors about its connected Flip parameter's own
+            // base->end reflection line, but only when the parameter's boolean state actually
+            // toggles (some other change to the same reference must not re-mirror it); the
+            // other three connections a real file carries (UpdatedFlip/UpdatedBase/UpdatedEnd)
+            // feed the parameter's own grip location, not followed here (see `ActionKind::Flip`).
+            let Some((node, _)) = a.connections.first() else { continue };
+            let Some(ParameterKind::Flip { base, end, flipped_state_label, .. }) = m.parameters.iter().find(|p| p.node == *node).map(|p| &p.kind)
+            else {
+                continue;
+            };
+            let (Some(new_v), Some(old_v)) = (set.get(node), current(&m, values, *node)) else { continue };
+            let (Val::Text(new_t), Val::Text(old_t)) = (new_v, &old_v) else { continue };
+            if new_t.eq_ignore_ascii_case(flipped_state_label) == old_t.eq_ignore_ascii_case(flipped_state_label) {
+                continue;
+            }
+            let (pb, pe) = (base.xy(), end.xy());
+            let mut handled: HashSet<Handle> = HashSet::new();
+            for h in &a.selection {
+                if !handled.insert(*h) || param_of.contains_key(h) {
+                    continue;
+                }
+                if let Some(c) = copy_of(h) {
+                    flips.entry(c).or_default().push((pb, pe));
                 }
             }
             continue;
@@ -625,6 +672,9 @@ fn apply(
         }
         for (pivot, ang) in rotations.get(&e.handle).into_iter().flatten() {
             c.kind.transform(&Mat3::rotate_about(*pivot, *ang));
+        }
+        for (pb, pe) in flips.get(&e.handle).into_iter().flatten() {
+            c.kind.transform(&Mat3::mirror(*pb, *pe));
         }
         if let EntityKind::Hatch(h) = &mut c.kind {
             for l in &mut h.loops {
@@ -955,7 +1005,7 @@ fn write_history(tags: &mut Vec<RawTag>, p: &super::Parameter, old: Option<&Val>
         _ => None,
     };
     let changes: Vec<(i32, Vec<RawTag>)> = match (&p.kind, v) {
-        (ParameterKind::Visibility { label, .. } | ParameterKind::Lookup { label, .. }, Val::Text(t)) => {
+        (ParameterKind::Visibility { label, .. } | ParameterKind::Lookup { label, .. } | ParameterKind::Flip { label, .. }, Val::Text(t)) => {
             vec![(p.node, vec![tag(1071, p.node.to_string()), tag(300, label.clone()), tag(1, t.clone())])]
         }
         (ParameterKind::Linear { label, .. }, Val::Points(b, e)) => {

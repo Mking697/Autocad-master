@@ -6,7 +6,9 @@
 //! graphics yet. BSAVE/BSAVEAS regenerate the block's dynamic-block data from what is stored here
 //! (`cadcraft_doc::dynblock::author_*`), since nothing else keeps it between saves.
 
-use cadcraft_doc::dynblock::{LinearParam, MoveAction, PointParam, RotateAction, RotationParam, StretchAction, VisibilityParam, VisibilityStateDef};
+use cadcraft_doc::dynblock::{
+    FlipAction, FlipParam, LinearParam, MoveAction, PointParam, RotateAction, RotationParam, StretchAction, VisibilityParam, VisibilityStateDef,
+};
 use serde_json::{Value, json};
 
 use super::bedit::editing;
@@ -22,14 +24,14 @@ pub(super) fn specs() -> Vec<CommandSpec> {
             .menu(&["Tools", "Block Editor", "Parameter", "Linear"])
             .alias(&["param"])
             .params(
-                "{type: \"linear\" | \"point\" | \"visibility\" | \"rotation\" (default \"linear\"), base: [x,y], end: [x,y], label? (default \"Distance1\"), description?, fromMidpoint?: bool (default false)} for linear; {type: \"point\", at: [x,y], label? (default \"Position1\"), description?} for point; {type: \"visibility\", at: [x,y], label? (default \"Visibility1\"), description?, controlled?: [handle,…] (default the current selection), states: [{name, visible: [handle,…]}, …] (at least 2)} for visibility; {type: \"rotation\", base: [x,y], end: [x,y] (sets the starting angle and radius), label? (default \"Angle1\"), description?} for rotation → {node}",
+                "{type: \"linear\" | \"point\" | \"visibility\" | \"rotation\" | \"flip\" (default \"linear\"), base: [x,y], end: [x,y], label? (default \"Distance1\"), description?, fromMidpoint?: bool (default false)} for linear; {type: \"point\", at: [x,y], label? (default \"Position1\"), description?} for point; {type: \"visibility\", at: [x,y], label? (default \"Visibility1\"), description?, controlled?: [handle,…] (default the current selection), states: [{name, visible: [handle,…]}, …] (at least 2)} for visibility; {type: \"rotation\", base: [x,y], end: [x,y] (sets the starting angle and radius), label? (default \"Angle1\"), description?} for rotation; {type: \"flip\", base: [x,y], end: [x,y] (the reflection line), label? (default \"Flip1\"), description?, baseStateLabel? (default \"Not flipped\"), flippedStateLabel? (default \"Flipped\")} for flip → {node}",
             )
             .enabled(editing),
         CommandSpec::new("bactiontool", "Action Tool", run_bactiontool)
             .menu(&["Tools", "Block Editor", "Action Tool", "Stretch"])
             .alias(&["actiontool"])
             .params(
-                "{type: \"stretch\" | \"move\" | \"rotate\" (default matches the pending parameter), handles? | handle? (default the current selection): the objects it moves/rotates, frame?: [[x,y],[x,y],…] (2 opposite corners, or a polygon; required for \"stretch\", unused for \"move\"/\"rotate\"), name? (default \"Stretch1\"/\"Move1\"/\"Rotate1\")} → {node}",
+                "{type: \"stretch\" | \"move\" | \"rotate\" | \"flip\" (default matches the pending parameter), handles? | handle? (default the current selection): the objects it moves/rotates/mirrors, frame?: [[x,y],[x,y],…] (2 opposite corners, or a polygon; required for \"stretch\", unused for \"move\"/\"rotate\"/\"flip\"), name? (default \"Stretch1\"/\"Move1\"/\"Rotate1\"/\"Flip1\")} → {node}",
             )
             .enabled(has_parameter),
     ]
@@ -110,8 +112,25 @@ fn run_bparameter(s: &mut Session, p: &Value) -> Result<Value> {
             label: str_param(p, "label").unwrap_or("Angle1").trim().to_string(),
             description: str_param(p, "description").unwrap_or("").to_string(),
         })
+    } else if kind.eq_ignore_ascii_case("flip") {
+        let base = point_req(cmd, p, "base")?;
+        let end = point_req(cmd, p, "end")?;
+        if base.near(end, 1e-9) {
+            return Err(bad(cmd, "`base` and `end` must not be the same point"));
+        }
+        PendingParam::Flip(FlipParam {
+            base: v3(base),
+            end: v3(end),
+            label: str_param(p, "label").unwrap_or("Flip1").trim().to_string(),
+            description: str_param(p, "description").unwrap_or("").to_string(),
+            base_state_label: str_param(p, "baseStateLabel").unwrap_or("Not flipped").trim().to_string(),
+            flipped_state_label: str_param(p, "flippedStateLabel").unwrap_or("Flipped").trim().to_string(),
+        })
     } else {
-        return Err(bad(cmd, "`type` must be \"linear\", \"point\", \"visibility\" or \"rotation\" (the only types this build can author)"));
+        return Err(bad(
+            cmd,
+            "`type` must be \"linear\", \"point\", \"visibility\", \"rotation\" or \"flip\" (the only types this build can author)",
+        ));
     };
     let st = s.state_mut()?;
     let be = st.block_edit.as_mut().ok_or_else(|| bad(cmd, "The Block Editor is not open."))?;
@@ -130,6 +149,7 @@ fn run_bactiontool(s: &mut Session, p: &Value) -> Result<Value> {
     let default_kind = match s.state().ok().and_then(|st| st.block_edit.as_ref()).and_then(|b| b.pending_param.as_ref()) {
         Some(PendingParam::Point(_)) => "move",
         Some(PendingParam::Rotation(_)) => "rotate",
+        Some(PendingParam::Flip(_)) => "flip",
         _ => "stretch",
     };
     let kind = str_param(p, "type").unwrap_or(default_kind);
@@ -150,8 +170,11 @@ fn run_bactiontool(s: &mut Session, p: &Value) -> Result<Value> {
     } else if kind.eq_ignore_ascii_case("rotate") {
         let name = str_param(p, "name").unwrap_or("Rotate1").trim().to_string();
         PendingAction::Rotate(RotateAction { selection, name })
+    } else if kind.eq_ignore_ascii_case("flip") {
+        let name = str_param(p, "name").unwrap_or("Flip1").trim().to_string();
+        PendingAction::Flip(FlipAction { selection, name })
     } else {
-        return Err(bad(cmd, "`type` must be \"stretch\", \"move\" or \"rotate\" (the only types this build can author)"));
+        return Err(bad(cmd, "`type` must be \"stretch\", \"move\", \"rotate\" or \"flip\" (the only types this build can author)"));
     };
     let st = s.state_mut()?;
     let be = st.block_edit.as_mut().ok_or_else(|| bad(cmd, "The Block Editor is not open."))?;

@@ -108,6 +108,31 @@ pub struct RotateAction {
     pub name: String,
 }
 
+/// A Flip parameter to author: a reflection line between `base` and `end`
+/// (`AcDbBlock2PtParameter` + `AcDbBlockFlipParameter`). Unlike every other two-point parameter
+/// here, the line itself never moves — only a boolean toggle, named by `base_state_label`/
+/// `flipped_state_label` ("Not flipped"/"Flipped" by default in AutoCAD).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlipParam {
+    pub base: Vec3,
+    pub end: Vec3,
+    /// The property name a reference's Properties palette shows ("Flip1").
+    pub label: String,
+    pub description: String,
+    pub base_state_label: String,
+    pub flipped_state_label: String,
+}
+
+/// A Flip action paired with the Flip parameter: toggling the state mirrors `selection`'s
+/// objects, whole, about the parameter's own reflection line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlipAction {
+    /// The entities it mirrors.
+    pub selection: Vec<Handle>,
+    /// Shown in the block editor ("Flip1").
+    pub name: String,
+}
+
 /// A named set of visible objects, part of a [`VisibilityParam`]: the state's name and which of
 /// the parameter's `controlled` objects are shown in it (the rest are hidden). This slice leaves
 /// a state's "active" list (other parameters/actions shown only in this state) empty — every
@@ -304,6 +329,64 @@ fn rotate_object(handle: Handle, owner: Handle, base: Vec3, a: &RotateAction) ->
     ForeignObject { handle, kind: "BLOCKROTATEACTION".into(), tags }
 }
 
+/// A Flip parameter: `base`/`end` give the reflection line in `AcDbBlock2PtParameter` (grip id
+/// `0` then the one toggle grip, no base grip — matching a real flip parameter's single-grip
+/// layout, checked against a real BLOCKFLIPPARAMETER object, see [`super::ParameterKind::Flip`]'s
+/// own doc comment), then `AcDbBlockFlipParameter`'s label/description (305/306) and the base/
+/// flipped state names (307/308).
+fn flip_object(handle: Handle, owner: Handle, p: &FlipParam) -> ForeignObject {
+    let mut tags = vec![tag(5, handle.hex()), tag(330, owner.hex())];
+    tags.push(tag(100, "AcDbEvalExpr"));
+    tags.push(tag(90, PARAM_NODE.to_string()));
+    tags.push(tag(100, "AcDbBlockElement"));
+    tags.push(tag(300, "Flip1"));
+    tags.push(tag(100, "AcDbBlockParameter"));
+    tags.push(tag(280, "1")); // shown in the Properties palette
+    tags.push(tag(100, "AcDbBlock2PtParameter"));
+    tags.extend(point_tags(1010, p.base));
+    tags.extend(point_tags(1011, p.end));
+    tags.push(tag(170, "1"));
+    tags.push(tag(91, "50")); // the toggle grip id
+    tags.push(tag(100, "AcDbBlockFlipParameter"));
+    tags.push(tag(305, p.label.clone()));
+    tags.push(tag(306, p.description.clone()));
+    tags.push(tag(307, p.base_state_label.clone()));
+    tags.push(tag(308, p.flipped_state_label.clone()));
+    ForeignObject { handle, kind: "BLOCKFLIPPARAMETER".into(), tags }
+}
+
+/// A Flip action paired with the Flip parameter: unlike Rotate, a real `AcDbBlockFlipAction`
+/// carries no base point of its own, only four connections back to the Flip parameter's own
+/// properties ("Flip", "UpdatedFlip", "UpdatedBase", "UpdatedEnd"; group codes checked against a
+/// real BLOCKFLIPACTION object, see [`super::action`]/[`super::ActionKind::Flip`]'s own doc
+/// comment) — this build only reads the first ("Flip") back, but writes all four, since other
+/// programs' readers expect the groups to be present (the same conservative choice `rotate_object`
+/// makes for its own base-point placeholders).
+fn flip_action_object(handle: Handle, owner: Handle, at: Vec3, a: &FlipAction) -> ForeignObject {
+    let mut tags = vec![tag(5, handle.hex()), tag(330, owner.hex())];
+    tags.push(tag(100, "AcDbEvalExpr"));
+    tags.push(tag(90, ACTION_NODE.to_string()));
+    tags.push(tag(100, "AcDbBlockElement"));
+    tags.push(tag(300, a.name.clone()));
+    tags.push(tag(100, "AcDbBlockAction"));
+    tags.push(tag(70, "0"));
+    tags.push(tag(71, a.selection.len().to_string()));
+    for h in &a.selection {
+        tags.push(tag(330, h.hex()));
+    }
+    tags.extend(point_tags(1010, at));
+    tags.push(tag(100, "AcDbBlockFlipAction"));
+    tags.push(tag(92, PARAM_NODE.to_string()));
+    tags.push(tag(301, "Flip"));
+    tags.push(tag(93, PARAM_NODE.to_string()));
+    tags.push(tag(302, "UpdatedFlip"));
+    tags.push(tag(94, PARAM_NODE.to_string()));
+    tags.push(tag(303, "UpdatedBase"));
+    tags.push(tag(95, PARAM_NODE.to_string()));
+    tags.push(tag(304, "UpdatedEnd"));
+    ForeignObject { handle, kind: "BLOCKFLIPACTION".into(), tags }
+}
+
 /// A grip id is required for every state, even a block with no further authoring (AutoCAD shows
 /// the triangle at this fixed position; which objects it lists comes from [`super::grips`]'s own
 /// `shown`/`choices` logic, not this id).
@@ -485,6 +568,37 @@ pub fn author_rotation_rotate(d: &mut Drawing, name: &str, param: &RotationParam
     if let Some(a) = action {
         let action_h = d.new_handle();
         objects.push(rotate_object(action_h, graph, param.base, a));
+        members.push(action_h);
+    }
+    finish(d, key, record_handle, graph, objects, members);
+    Ok(())
+}
+
+/// Author `param` (graph id 1) and, when given, `action` (graph id 2) into block `name`'s
+/// dynamic-block data, pairing a Flip parameter with a Flip action the same way
+/// [`author_linear_stretch`] pairs a Linear parameter with a Stretch action: an error, changing
+/// nothing, when the block already has dynamic-block data, `base` and `end` are the same point
+/// (a reflection needs a line), or `action` has an empty selection.
+pub fn author_flip_flip(d: &mut Drawing, name: &str, param: &FlipParam, action: Option<&FlipAction>) -> Result<(), String> {
+    if let Some(why) = refusal(d, name) {
+        return Err(why);
+    }
+    if param.base.xy().near(param.end.xy(), 1e-9) {
+        return Err("The Flip parameter's base and end points must not be the same point.".into());
+    }
+    if let Some(a) = action
+        && a.selection.is_empty()
+    {
+        return Err("The Flip action needs at least one selected object.".into());
+    }
+    let (record_handle, key) = record_and_key(d, name);
+    let graph = d.new_handle();
+    let param_h = d.new_handle();
+    let mut members = vec![param_h];
+    let mut objects = vec![flip_object(param_h, graph, param)];
+    if let Some(a) = action {
+        let action_h = d.new_handle();
+        objects.push(flip_action_object(action_h, graph, (param.base + param.end) * 0.5, a));
         members.push(action_h);
     }
     finish(d, key, record_handle, graph, objects, members);
@@ -740,5 +854,77 @@ mod tests {
         assert!((rotated.a.x - 0.0).abs() < 1e-9 && (rotated.a.y - 2.0).abs() < 1e-9, "{rotated:?}");
         assert!((rotated.b.x - (-1.0)).abs() < 1e-9 && (rotated.b.y - 2.0).abs() < 1e-9, "{rotated:?}");
         let _ = h1;
+    }
+
+    #[test]
+    fn authored_flip_data_reads_back_and_toggling_mirrors_the_selected_line() {
+        let (mut d, h1, h2, r) = fixture();
+        // Reflection line is the vertical line x = 2 (base (2,0) -> end (2,5)); h2's own line,
+        // (2,0)-(2,1), sits ON that line (both its points stay put when mirrored), so h1's line,
+        // (0,0)-(2,0), is the one selected to prove the mirror actually moves something.
+        let param = FlipParam {
+            base: Vec3::new(2.0, 0.0, 0.0),
+            end: Vec3::new(2.0, 5.0, 0.0),
+            label: "Flip1".into(),
+            description: "Mirror".into(),
+            base_state_label: "Not flipped".into(),
+            flipped_state_label: "Flipped".into(),
+        };
+        let action = FlipAction { selection: vec![h1], name: "Flip1".into() };
+        author_flip_flip(&mut d, "B", &param, Some(&action)).unwrap();
+
+        let m = super::super::dynamic_block(&d, "B").expect("B is now a dynamic block");
+        assert_eq!(m.parameters.len(), 1);
+        assert_eq!(m.actions.len(), 1);
+        let p = &m.parameters[0];
+        assert_eq!((p.node, p.element.as_str(), p.show_properties), (1, "Flip1", true));
+        let super::super::ParameterKind::Flip { base, end, label, description, base_state_label, flipped_state_label } = &p.kind else {
+            panic!("{p:?}")
+        };
+        assert_eq!((base.x, base.y, end.x, end.y), (2.0, 0.0, 2.0, 5.0));
+        assert_eq!((label.as_str(), description.as_str()), ("Flip1", "Mirror"));
+        assert_eq!((base_state_label.as_str(), flipped_state_label.as_str()), ("Not flipped", "Flipped"));
+
+        let a = &m.actions[0];
+        assert_eq!((a.node, a.name.as_str()), (2, "Flip1"));
+        assert_eq!(a.selection, [h1]);
+        assert_eq!(a.connections, [(1, "Flip".to_string())]);
+        assert!(matches!(a.kind, super::super::ActionKind::Flip));
+
+        let (_, props) = super::super::custom_properties(&d, r).expect("custom properties");
+        let prop = props.iter().find(|p| p.name == "Flip1").expect("Flip1 property");
+        assert_eq!(prop.value, "Not flipped");
+        assert_eq!(prop.choices, ["Not flipped", "Flipped"]);
+
+        super::super::set_property(&mut d, r, "Flip1", "Flipped").unwrap();
+        let (_, props) = super::super::custom_properties(&d, r).expect("custom properties after the toggle");
+        let prop = props.iter().find(|p| p.name == "Flip1").expect("Flip1 property");
+        assert_eq!(prop.value, "Flipped");
+
+        let name = match &d.entity(r).unwrap().kind {
+            EntityKind::Insert(i) => i.block.clone(),
+            _ => panic!(),
+        };
+        let b = d.block(&name).unwrap();
+        let lines: Vec<Line> = b.entities.iter().filter_map(|e| if let EntityKind::Line(l) = &e.kind { Some(l.clone()) } else { None }).collect();
+        // Mirroring (0,0)-(2,0) about x = 2 gives (4,0)-(2,0); the unselected line, (2,0)-(2,1),
+        // is on the reflection line and so is unchanged.
+        let unselected = lines.iter().find(|l| l.a.x == 2.0 && l.b.y == 1.0).expect("the unselected line's copy");
+        assert_eq!((unselected.a.x, unselected.a.y, unselected.b.x, unselected.b.y), (2.0, 0.0, 2.0, 1.0));
+        let flipped = lines.iter().find(|l| (l.a.x - 4.0).abs() < 1e-9 || (l.b.x - 4.0).abs() < 1e-9).expect("the mirrored line's copy");
+        assert!((flipped.a.x - 4.0).abs() < 1e-9 && (flipped.a.y - 0.0).abs() < 1e-9, "{flipped:?}");
+        assert!((flipped.b.x - 2.0).abs() < 1e-9 && (flipped.b.y - 0.0).abs() < 1e-9, "{flipped:?}");
+
+        // Toggling back restores the original (unmirroring is its own inverse).
+        super::super::set_property(&mut d, r, "Flip1", "Not flipped").unwrap();
+        let name = match &d.entity(r).unwrap().kind {
+            EntityKind::Insert(i) => i.block.clone(),
+            _ => panic!(),
+        };
+        let b = d.block(&name).unwrap();
+        let lines: Vec<Line> = b.entities.iter().filter_map(|e| if let EntityKind::Line(l) = &e.kind { Some(l.clone()) } else { None }).collect();
+        let restored = lines.iter().find(|l| l.a.x == 0.0 || l.b.x == 0.0).expect("the restored line's copy");
+        assert_eq!((restored.a.x, restored.a.y, restored.b.x, restored.b.y), (0.0, 0.0, 2.0, 0.0));
+        let _ = h2;
     }
 }
