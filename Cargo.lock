@@ -622,6 +622,7 @@ dependencies = [
 name = "cadcraft-doc"
 version = "0.13.0"
 dependencies = [
+ "acadrust",
  "cadcraft-color",
  "cadcraft-geom",
  "serde",

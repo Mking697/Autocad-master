@@ -14,3 +14,8 @@ cadcraft-color = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# MPL-2.0: used as an unmodified dependency only (see crates/dwg and plan/adr/0001), for its
+# CTB/STB plot style codec (`src/ctb.rs`) only — nothing else in CADCraft touches its types.
+acadrust = "0.6.5"

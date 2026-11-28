@@ -104,3 +104,42 @@ fn stylesmanager_creates_edits_saves_and_loads_tables() {
     // Undo takes a table edit back.
     s.execute("undo", &json!({})).unwrap();
 }
+
+/// Real binary `.ctb`/`.stb` files (issue #410's F14 follow-up), not just CADCraft's own JSON
+/// text format: saving/loading a `.ctb` path round-trips through the real zlib container
+/// (`cadcraft_doc::ctb`), and a `.stb` path surfaces that encoder's real, documented refusal
+/// (acadrust's own writer can't serialize named tables) as a clean error, not a panic or
+/// silently wrong bytes.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn stylesmanager_saves_and_loads_a_real_binary_ctb_file() {
+    let mut s = Session::new();
+    s.execute("stylesmanager", &json!({"action": "new", "name": "colors", "kind": "colorDependent"})).unwrap();
+    s.execute(
+        "stylesmanager",
+        &json!({"action": "set", "name": "colors.ctb", "style": {"name": "Color_1", "color": "#ff0000", "lineweight": 0.5, "end": "square"}}),
+    )
+    .unwrap();
+
+    let path = std::env::temp_dir().join(format!("cadcraft-pstyle-real-{}.ctb", std::process::id()));
+    let p = path.to_string_lossy().to_string();
+    let saved = s.execute("stylesmanager", &json!({"action": "save", "name": "colors.ctb", "path": p})).unwrap();
+    assert!(saved["bytes"].as_u64().unwrap() > 60, "a real file is bigger than just the header");
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(cadcraft_doc::ctb::looks_like_binary_ctb(&bytes), "wrote a real binary CTB, not JSON text");
+
+    s.execute("stylesmanager", &json!({"action": "delete", "name": "colors.ctb"})).unwrap();
+    s.execute("stylesmanager", &json!({"action": "load", "path": p, "name": "reloaded.ctb"})).unwrap();
+    let got = s.execute("stylesmanager", &json!({"action": "get", "name": "reloaded.ctb"})).unwrap();
+    let pen = got["styles"].as_array().unwrap().iter().find(|v| v["name"] == "Color_1").unwrap().clone();
+    assert_eq!((pen["color"].as_str(), pen["lineweight"].as_u64(), pen["end"].as_str()), (Some("#ff0000"), Some(50), Some("square")));
+    let _ = std::fs::remove_file(&path);
+
+    // A named table can't be written as a real .stb (acadrust's own writer limitation) — the
+    // command must surface a clean error, never a panic or a garbage file on disk.
+    s.execute("stylesmanager", &json!({"action": "new", "name": "office", "kind": "named"})).unwrap();
+    let stb_path = std::env::temp_dir().join(format!("cadcraft-pstyle-real-{}.stb", std::process::id()));
+    let sp = stb_path.to_string_lossy().to_string();
+    assert!(s.execute("stylesmanager", &json!({"action": "save", "name": "office.stb", "path": sp})).is_err());
+    assert!(!stb_path.exists(), "a failed save must not leave a half-written file");
+}

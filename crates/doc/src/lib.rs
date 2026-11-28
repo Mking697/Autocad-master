@@ -8,6 +8,8 @@
 
 mod array;
 mod constraint;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ctb;
 mod entity;
 mod extents;
 mod gdt;

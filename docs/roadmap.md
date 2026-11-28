@@ -19,8 +19,9 @@ Opus 5.5 agent-hours.
    overrides, editable dynamic input (U1–U4). ≈ 25–35 h.
 5. **Unstub the prompt options** of the most-used commands (F1). ≈ 15–25 h.
 6. **Autosave, recovery, AUDIT, RECOVER** (F4). ≈ 10–15 h.
-7. **The rest of the alpha gate:** block editor and REFEDIT, xref attach (F2, F3), and plot styles
-   with a plot dialog and preview (F14). ≈ 50–80 h.
+7. **The rest of the alpha gate:** dynamic blocks, xref attach depth (F2, F3), and plot styles
+   with a plot dialog and preview (F14). REFEDIT itself (editing a static block reference in place)
+   is already landed — see the "Use blocks" row below; this item no longer includes it. ≈ 40–65 h.
 
 Items 2–5 and 7 are the [alpha gate](#alpha-gate) rows.
 
@@ -34,10 +35,10 @@ the alpha checklist. Main platform: macOS.
 |---|---|---|---|
 | Draw and modify precisely with object snaps and tracking | **partial, blocking** | Running snaps, polar, ortho and coordinate entry work; object snap tracking, extension and parallel snaps are toggles with no behaviour; no FROM/M2P/TK or typed snap overrides; TRIM/EXTEND standard mode, OFFSET Erase/Layer/Multiple, ROTATE Reference print "not available yet"; ellipse/spline intersections approximate ([ui-parity.md](ui-parity.md), [gaps.md](gaps.md) U1, U3, U4, F1) | 35–50 |
 | Dimension and annotate | partial, not blocking | All core DIM types, associativity, DIMSTYLE variables (43 of ~80), TEXT/MTEXT, MLEADER, tables work; no DIMSTYLE dialog, MTEXT editor not in place, MLEADER thin (F7, F9, F10). A drafter can dimension a sheet end to end | 0 for the gate (beta work) |
-| Use blocks (insert library blocks, edit them, attributes, xrefs) | **partial, blocking** | Static BLOCK/INSERT/attributes, ATTSYNC, BATTMAN editing, xrefs (#525) and the Block Editor (BEDIT/BSAVE/BCLOSE: every reference updates) work; no REFEDIT, so a block can't be edited in place in the drawing; no XCLIP; dynamic blocks from other drawings lose their behaviour (F2, F3) | 35–55 |
+| Use blocks (insert library blocks, edit them, attributes, xrefs) | **partial, blocking** | Static BLOCK/INSERT/attributes, ATTSYNC, BATTMAN editing, xrefs (#525), the Block Editor (BEDIT/BSAVE/BCLOSE: every reference updates), XCLIP (data model only) and REFEDIT/REFSET/REFCLOSE (#813: a static block reference can be edited in place — working set, faded rest of the block, save propagates to every reference, discard restores exactly) work; xrefs can't yet be edited in place (their source drawing isn't written back; XOPEN opens it separately); dynamic blocks are only a vertical-slice authoring tool and from other drawings lose their behaviour (F2, F3) | 25–45 |
 | Layers, layouts and plotting a sheet | **partial, blocking** | Layers, layouts, viewports, page setups, PDF output, plot styles (CTB/STB, #410), the Plot dialog (#160), Plot Preview and PUBLISH (#186) and plotter devices (#564) work; printers only via PDF/PNG/SVG files (F14, H3) | 15–25 |
 | Save DWG that AutoCAD opens without loss, and reopen others' DWGs | **no** | DXF keeps what we don't model (#528) and writes native MULTILEADERs (#459, not yet tested through DWG); through DWG, acadrust drops custom-class entities and objects and some foreign data; never checked in AutoCAD; no real-file tests; a 10 MB DWG failed after ~2 min (#57) (FF1–FF6) | 40–60 + owner (real-file corpus, AutoCAD check) |
-| **To alpha** | | | **≈ 125–190** |
+| **To alpha** | | | **≈ 115–180** |
 
 Ready for real work is ≈ 38%, also under the ~40% alpha bar; closing the gate rows lifts it past
 40%.

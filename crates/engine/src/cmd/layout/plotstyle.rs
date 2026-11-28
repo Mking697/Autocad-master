@@ -298,8 +298,13 @@ fn run_stylesmanager(s: &mut Session, p: &Value) -> Result<Value> {
             Ok(json!({ "deleted": name }))
         }
         "load" => {
-            let text = match (str_param(p, "text"), str_param(p, "path")) {
-                (Some(t), _) => t.to_string(),
+            // A real `.ctb`/`.stb` file is binary (and may not be valid UTF-8 text), so a
+            // `path` is read as bytes first and only decoded as our own JSON text format if it
+            // doesn't look like one. `text` (no file on disk, e.g. over the control channel)
+            // stays JSON-only: there is no binary-safe way to carry raw CTB/STB bytes in JSON
+            // here, so a real binary table must be loaded by `path`.
+            let loaded: std::result::Result<PlotStyleTable, String> = match (str_param(p, "text"), str_param(p, "path")) {
+                (Some(t), _) => PlotStyleTable::from_file_text(t),
                 (None, Some(_path)) => {
                     #[cfg(not(target_arch = "wasm32"))]
                     {
@@ -307,14 +312,23 @@ fn run_stylesmanager(s: &mut Session, p: &Value) -> Result<Value> {
                         if meta.len() > cadcraft_doc::MAX_TABLE_FILE as u64 {
                             return Err(bad(cmd, format!("{_path}: the plot style table file is too large")));
                         }
-                        std::fs::read_to_string(_path).map_err(|e| bad(cmd, format!("{_path}: {e}")))?
+                        let bytes = std::fs::read(_path).map_err(|e| bad(cmd, format!("{_path}: {e}")))?;
+                        let file_name = std::path::Path::new(_path).file_name().and_then(|n| n.to_str()).unwrap_or(_path);
+                        if cadcraft_doc::ctb::looks_like_binary_ctb(&bytes)
+                            || file_name.to_ascii_lowercase().ends_with(".ctb")
+                            || file_name.to_ascii_lowercase().ends_with(".stb")
+                        {
+                            cadcraft_doc::ctb::decode_ctb_stb(&bytes, file_name)
+                        } else {
+                            String::from_utf8(bytes).map_err(|e| e.to_string()).and_then(|t| PlotStyleTable::from_file_text(&t))
+                        }
                     }
                     #[cfg(target_arch = "wasm32")]
                     return Err(bad(cmd, "files can't be read here: pass `text`"));
                 }
                 (None, None) => return Err(bad(cmd, "`path` or `text` is required")),
             };
-            let mut t = PlotStyleTable::from_file_text(&text).map_err(|e| bad(cmd, e))?;
+            let mut t = loaded.map_err(|e| bad(cmd, e))?;
             if let Some(n) = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
                 t.name = n.chars().take(255).collect();
             }
@@ -327,16 +341,22 @@ fn run_stylesmanager(s: &mut Session, p: &Value) -> Result<Value> {
         }
         "save" => {
             let name = table_name(cmd, p)?;
-            let text = find_table(cmd, s.doc()?, &name)?.to_file_text();
+            let table = find_table(cmd, s.doc()?, &name)?;
             match str_param(p, "path") {
-                None => Ok(json!({ "name": name, "text": text })),
+                None => Ok(json!({ "name": name, "text": table.to_file_text() })),
                 Some(_path) => {
                     #[cfg(not(target_arch = "wasm32"))]
                     {
+                        let lower = _path.to_ascii_lowercase();
+                        let bytes = if lower.ends_with(".ctb") || lower.ends_with(".stb") {
+                            cadcraft_doc::ctb::encode_ctb_stb(&table).map_err(|e| bad(cmd, e))?
+                        } else {
+                            table.to_file_text().into_bytes()
+                        };
                         let tmp = format!("{_path}.cadcraft-tmp");
-                        std::fs::write(&tmp, text.as_bytes()).map_err(|e| bad(cmd, format!("{_path}: {e}")))?;
+                        std::fs::write(&tmp, &bytes).map_err(|e| bad(cmd, format!("{_path}: {e}")))?;
                         std::fs::rename(&tmp, _path).map_err(|e| bad(cmd, format!("{_path}: {e}")))?;
-                        Ok(json!({ "name": name, "path": _path, "bytes": text.len() }))
+                        Ok(json!({ "name": name, "path": _path, "bytes": bytes.len() }))
                     }
                     #[cfg(target_arch = "wasm32")]
                     Err(bad(cmd, "files can't be written here: leave out `path` to get `text`"))

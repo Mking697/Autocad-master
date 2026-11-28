@@ -68,6 +68,26 @@ fn outline(xf: &Xf, g: &DynGrip, gs: f32) -> Vec<Pos2> {
             let w = gs * 1.3;
             vec![c + vec2(-w, -w * 0.6), c + vec2(w, -w * 0.6), c + vec2(0.0, w * 0.9)]
         }
+        GripShape::Rotation => {
+            // A circular-arrow look: a ring approximated as a many-sided convex polygon
+            // (`Shape::convex_polygon` can't draw an open arc), oriented so one point leads
+            // toward `g.dir` (the direction the angle currently turns from).
+            let base_angle = if g.dir.len() > 1e-6 { g.dir.y.atan2(g.dir.x) as f32 } else { 0.0 };
+            let r = gs * 1.3;
+            const SIDES: usize = 10;
+            (0..SIDES)
+                .map(|i| {
+                    let a = base_angle + (i as f32) * std::f32::consts::TAU / (SIDES as f32);
+                    c + vec2(a.cos(), a.sin()) * r
+                })
+                .collect()
+        }
+        GripShape::Flip => {
+            // A diamond (rotated square) stands in for the double-headed toggle arrow — a
+            // convex shape distinct from the other three grip looks.
+            let w = gs * 1.3;
+            vec![c + vec2(0.0, -w), c + vec2(w, 0.0), c + vec2(0.0, w), c + vec2(-w, 0.0)]
+        }
     }
 }
 
