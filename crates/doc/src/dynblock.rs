@@ -92,14 +92,26 @@ pub enum ParameterKind {
         /// The value changes the end point (`false`) or both points from the midpoint (`true`).
         from_midpoint: bool,
     },
-    /// A distance and an angle from a base point.
-    Polar { base: Vec3, end: Vec3 },
-    /// Horizontal and vertical distances from a base point.
-    Xy { base: Vec3, end: Vec3 },
+    /// A distance and an angle from a base point. A real `AcDbBlockPolarParameter` names and
+    /// describes the distance (305/306, read into `label`/`description` here) *and* the angle
+    /// (307/308) as two separate reference properties ("Distance"/"Angle"); this build reads only
+    /// the distance's own name/description, the same narrow scope Linear/Rotation already use for
+    /// a single labelled value, leaving the angle's own label/description unread for a future
+    /// slice that needs it.
+    Polar { base: Vec3, end: Vec3, label: String, description: String },
+    /// Horizontal and vertical distances from a base point. A real `AcDbBlockXYParameter` names
+    /// and describes the x distance (305/306, read into `label`/`description` here) *and* the y
+    /// distance (307/308) as two separate reference properties; only the x distance's own
+    /// name/description is read here, for the same reason given on [`ParameterKind::Polar`].
+    Xy { base: Vec3, end: Vec3, label: String, description: String },
     /// An angle about a base point: `end` gives the current angle and radius (the angle from the
     /// block's x axis to `end - base`); `label`/`description`/`values` mirror Linear's own.
     Rotation { base: Vec3, end: Vec3, label: String, description: String, values: ValueSet },
-    /// Aligns the reference with nearby geometry.
+    /// Aligns the reference with nearby geometry. A real `AcDbBlockAlignmentParameter` carries no
+    /// label or description group codes at all — only the perpendicular flag (280); unlike every
+    /// other two-point parameter here, an Alignment parameter exposes no property in a reference's
+    /// Properties palette in real AutoCAD, so [`ParameterKind::label`] correctly returns `None` for
+    /// it, the same as [`ParameterKind::BasePoint`] below.
     Alignment { base: Vec3, end: Vec3 },
     /// Mirrors the objects about the reflection line `base`->`end`: the current state is a
     /// boolean (`base_state_label`/`flipped_state_label` name its two values, "Not flipped"/
@@ -134,6 +146,8 @@ impl ParameterKind {
             | ParameterKind::Visibility { label, .. }
             | ParameterKind::Lookup { label, .. }
             | ParameterKind::Rotation { label, .. }
+            | ParameterKind::Polar { label, .. }
+            | ParameterKind::Xy { label, .. }
             | ParameterKind::Flip { label, .. } => Some(label),
             _ => None,
         }
@@ -442,13 +456,34 @@ fn parameter(kind: &str, secs: &[(&str, &[RawTag])]) -> ParameterKind {
             c.real(140);
             ParameterKind::Rotation { base, end, label, description, values: value_set(&mut c) }
         }
-        "BLOCKPOLARPARAMETER" | "BLOCKXYPARAMETER" | "BLOCKALIGNMENTPARAMETER" => {
+        "BLOCKPOLARPARAMETER" => {
             let (base, end) = two();
-            match kind {
-                "BLOCKPOLARPARAMETER" => ParameterKind::Polar { base, end },
-                "BLOCKXYPARAMETER" => ParameterKind::Xy { base, end },
-                _ => ParameterKind::Alignment { base, end },
-            }
+            let mut c = Cursor::new(section(secs, "AcDbBlockPolarParameter"));
+            // The distance's own name/description (305/306) — checked against a real
+            // BLOCKPOLARPARAMETER object's documented layout: a real file also carries the
+            // angle's own name/description (307/308) as a second reference property
+            // ("Distance"/"Angle"), which this build does not yet read, see
+            // [`ParameterKind::Polar`].
+            let label = c.string(305);
+            let description = c.string(306);
+            ParameterKind::Polar { base, end, label, description }
+        }
+        "BLOCKXYPARAMETER" => {
+            let (base, end) = two();
+            let mut c = Cursor::new(section(secs, "AcDbBlockXYParameter"));
+            // The x distance's own name/description (305/306); a real file also carries the y
+            // distance's own name/description (307/308), not yet read here, see
+            // [`ParameterKind::Xy`].
+            let label = c.string(305);
+            let description = c.string(306);
+            ParameterKind::Xy { base, end, label, description }
+        }
+        "BLOCKALIGNMENTPARAMETER" => {
+            // No label/description group codes exist on a real AcDbBlockAlignmentParameter (only
+            // the perpendicular flag, 280, which CADCraft doesn't act on yet either); see
+            // [`ParameterKind::Alignment`].
+            let (base, end) = two();
+            ParameterKind::Alignment { base, end }
         }
         "BLOCKFLIPPARAMETER" => {
             let (base, end) = two();
@@ -636,5 +671,33 @@ mod tests {
         let (_, ActionKind::Stretch { vertices, .. }) = stretch(&tags) else { panic!("a stretch action") };
         let ints: usize = vertices.iter().map(|(_, v)| v.len()).sum();
         assert!(ints <= 16 * tags.len() + 1024, "{ints}");
+    }
+
+    /// A Polar parameter's base/end and its distance's own label/description (305/306 on
+    /// `AcDbBlockPolarParameter`, the same codes Linear/Rotation use for their own single
+    /// labelled value) round-trip through `parameter()`.
+    #[test]
+    fn polar_parameter_reads_base_end_and_label() {
+        let tags = vec![
+            tag(100, "AcDbBlockElement"),
+            tag(100, "AcDbBlockParameter"),
+            tag(100, "AcDbBlock2PtParameter"),
+            tag(1010, "1.5"),
+            tag(1020, "2.5"),
+            tag(1030, "0.0"),
+            tag(1011, "10.5"),
+            tag(1021, "20.5"),
+            tag(1031, "0.0"),
+            tag(100, "AcDbBlockPolarParameter"),
+            tag(305, "Distance1"),
+            tag(306, "A polar distance"),
+        ];
+        let secs = sections(&tags);
+        let ParameterKind::Polar { base, end, label, description } = parameter("BLOCKPOLARPARAMETER", &secs) else { panic!("a polar parameter") };
+        assert_eq!(base, Vec3::new(1.5, 2.5, 0.0));
+        assert_eq!(end, Vec3::new(10.5, 20.5, 0.0));
+        assert_eq!(label, "Distance1");
+        assert_eq!(description, "A polar distance");
+        assert_eq!(ParameterKind::Polar { base, end, label, description }.label(), Some("Distance1"));
     }
 }

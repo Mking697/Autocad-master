@@ -106,8 +106,8 @@ fn current(m: &DynamicBlock, values: &BTreeMap<i32, Value>, node: i32) -> Option
         (ParameterKind::Point { at, .. }, None) => Val::Point(*at),
         (
             ParameterKind::Linear { base, end, .. }
-            | ParameterKind::Polar { base, end }
-            | ParameterKind::Xy { base, end }
+            | ParameterKind::Polar { base, end, .. }
+            | ParameterKind::Xy { base, end, .. }
             | ParameterKind::Rotation { base, end, .. }
             | ParameterKind::Alignment { base, end },
             None,
