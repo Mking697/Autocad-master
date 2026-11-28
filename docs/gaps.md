@@ -47,11 +47,25 @@ next unchecked one.
    - F1 remainder: materials -RENAME needs a minimal material table first.
    Est. 50–75h beyond the corpus/owner-blocked half.
 
-3. **Plot styles — F14 [re-audited 2026-11-24, mostly closed, one real gap left]**. Plot dialog,
-   preview, PUBLISH, plotter devices and PDF/PNG/SVG output all work. Genuinely still open:
-   CTB/STB **binary** style-table *reading* (blocked on a public format spec — watch for one
-   before attempting a guess-based parser) and real system-printer output (duplicates H3 in
-   `hardware-parity.md`). Low remaining hours (5–15h) once a spec is available; otherwise blocked.
+3. **Plot styles — F14 [re-audited 2026-11-28, no longer fully blocked]**. Plot dialog,
+   preview, PUBLISH, plotter devices and PDF/PNG/SVG output all work. CTB/STB **binary**
+   style-table *reading* is **partially unblocked as of 2026-11-28**: no official Autodesk/ODA
+   byte-format spec exists, but a legally clean, cross-corroborated community description does —
+   a fixed 60-byte header (48-byte ASCII prefix + 3×uint32: adler32 checksum, decompressed length,
+   compressed length) followed by a zlib-compressed plain-ASCII key=value/brace body — documented
+   by ezdxf's `acadctb.py` (MIT, Manfred Moitzi:
+   https://github.com/mozman/ezdxf/blob/master/src/ezdxf/addons/acadctb.py), corroborated
+   independently by the UK National Archives' PRONOM registry (public-sector format-signature
+   data, non-code: https://pronom.nationalarchives.gov.uk/x-fmt/37), `edanko/dxf`'s Go port (MIT),
+   and the `acadrust` crate (docs.rs) already vendored here. One minor discrepancy remains
+   unresolved (a GPL'd `ctbtool` write-up types the trailing 12 header bytes differently —
+   uint32+2×uint16+uint16 vs ezdxf's 3×uint32 — but since the zlib stream is self-delimiting this
+   doesn't block a correct implementation; **do not read `ctbtool` or any other GPL/LGPL/AGPL
+   CTB/STB parser** — implement only from ezdxf/PRONOM/edanko, then validate round-trip against
+   CADCraft's own synthetic CTB/STB files per AGENTS.md). Real system-printer output still
+   duplicates H3 in `hardware-parity.md`. Est. 5–15h for CTB/STB read/write now that a clean
+   reference exists; verify empirically before calling it done (two public sources disagree on
+   one field).
 
 4. **Object snap tracking — Row 1 [already closed 2026-11-23, verify only if something looks
    wrong]**. Re-audited against actual source, not docs: tracking, extension/parallel snaps,
